@@ -136,6 +136,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 				applyFingerprintProfileAttribute(auth, metadata)
+				if auth.QuotaDomain == "" {
+					auth.QuotaDomain = provider
+				}
 			}
 			return auths, nil
 		}
@@ -185,6 +188,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	a := &coreauth.Auth{
 		ID:       id,
 		Provider: provider,
+		// File-based OAuth credentials have no per-file quota configuration.
+		// Their canonical provider identity is the canonical quota pool.
+		QuotaDomain: provider,
 		Label:    label,
 		Prefix:   prefix,
 		Status:   status,
