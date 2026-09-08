@@ -44,7 +44,7 @@ func managementRoutingProjection() *modelrouting.Config {
 		Pricing: pricing, Selectable: true, SelectionReason: "eligible",
 	}
 	projection := &modelrouting.Config{
-		SchemaVersion: 2, Generation: 1, SnapshotDigest: contractSnapshotDigest,
+		SchemaVersion: modelrouting.SchemaVersion, Generation: 1, SnapshotDigest: contractSnapshotDigest,
 		ProjectionDigest: contractSnapshotDigest,
 		DirectModels: []modelrouting.DirectModel{{
 			ModelKey: modelKey, DisplayName: "GPT-5.4", Active: true,
