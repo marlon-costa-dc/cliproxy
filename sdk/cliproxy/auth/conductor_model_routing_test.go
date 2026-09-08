@@ -191,7 +191,7 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 		}
 	}
 	projection := &modelrouting.Config{
-		SchemaVersion: 2, Generation: 1,
+		SchemaVersion: modelrouting.SchemaVersion, Generation: 1,
 		SnapshotDigest:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		ProjectionDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		DirectModels: []modelrouting.DirectModel{{

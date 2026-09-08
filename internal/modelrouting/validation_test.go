@@ -28,7 +28,7 @@ func validConfig() Config {
 		},
 	}
 	cfg := Config{
-		SchemaVersion:    2,
+		SchemaVersion:    SchemaVersion,
 		Generation:       42,
 		SnapshotDigest:   testDigest,
 		ProjectionDigest: testDigest,
@@ -103,6 +103,29 @@ func TestValidateAcceptsLosslessRouteProjection(t *testing.T) {
 	cfg := validConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsUnsupportedSchemaVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		version int
+	}{
+		{name: "legacy v2", version: SchemaVersion - 1},
+		{name: "unknown future", version: SchemaVersion + 1},
+		{name: "zero", version: 0},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfig()
+			cfg.SchemaVersion = test.version
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "model-routing.schema-version") {
+				t.Fatalf("Validate() error = %v, want schema-version failure", err)
+			}
+		})
 	}
 }
 

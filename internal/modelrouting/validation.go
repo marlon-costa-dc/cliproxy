@@ -102,7 +102,7 @@ func (cfg *Config) Validate() error {
 	if cfg == nil {
 		return fmt.Errorf("model-routing: projection is required")
 	}
-	if cfg.SchemaVersion != 2 {
+	if cfg.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("model-routing.schema-version: unsupported value %d", cfg.SchemaVersion)
 	}
 	if cfg.Generation == 0 {
