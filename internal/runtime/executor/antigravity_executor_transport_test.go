@@ -176,12 +176,29 @@ func TestNewAntigravityHTTPClientKeepsForeignRoundTripper(t *testing.T) {
 // the pool limit: with Go's default of 2 idle connections per host, repeated waves of
 // concurrent requests on one credential keep re-handshaking.
 func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
+	const (
+		waves      = 3
+		perWave    = 8
+		totalConns = waves * perWave
+	)
 	var mu sync.Mutex
 	remotes := map[string]struct{}{}
+	firstWaveReady := make(chan struct{})
+	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		remotes[r.RemoteAddr] = struct{}{}
+		requests++
+		if requests == perWave {
+			close(firstWaveReady)
+		}
 		mu.Unlock()
+		// Occupy all first-wave connections before allowing reuse or later waves.
+		select {
+		case <-firstWaveReady:
+		case <-r.Context().Done():
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -189,11 +206,6 @@ func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
 	auth := antigravityAuthWithIDAndProxy("concurrent-reuse", "")
 	client := &http.Client{Transport: antigravityHTTP11Transport(auth, http.DefaultTransport.(*http.Transport))}
 
-	const (
-		waves      = 3
-		perWave    = 8
-		totalConns = waves * perWave
-	)
 	for wave := 0; wave < waves; wave++ {
 		start := make(chan struct{})
 		var wg sync.WaitGroup

@@ -75,7 +75,7 @@ jobs:
         with:
           distribution: goreleaser
           version: v2.17.0
-          args: release --clean --skip=validate
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ env.VERSION }}
