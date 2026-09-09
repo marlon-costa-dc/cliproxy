@@ -178,7 +178,6 @@ func (cfg *Config) Validate() error {
 
 	aliases := make(map[string]struct{}, len(cfg.Aliases))
 	tiers := make(map[string]struct{}, len(cfg.Aliases))
-	modelTier := make(map[string]string)
 	for aliasIndex, alias := range cfg.Aliases {
 		path := fmt.Sprintf("model-routing.aliases[%d]", aliasIndex)
 		if err := requireCanonical(path+".name", alias.Name); err != nil {
@@ -201,6 +200,7 @@ func (cfg *Config) Validate() error {
 		if err := requireCanonical(path+".reason", alias.Reason); err != nil {
 			return err
 		}
+		memberModels := make(map[string]struct{}, len(alias.Members))
 		for memberIndex, member := range alias.Members {
 			memberPath := fmt.Sprintf("%s.members[%d]", path, memberIndex)
 			if member.MemberRank != memberIndex+1 {
@@ -214,12 +214,10 @@ func (cfg *Config) Validate() error {
 			if !exists || !model.Active {
 				return fmt.Errorf("%s.model-key: member does not reference an active direct model", memberPath)
 			}
-			if assignedTier, exists := modelTier[modelID]; exists && assignedTier != alias.TierID {
-				return fmt.Errorf("%s.model-key: ModelKey is assigned to tiers %q and %q", memberPath, assignedTier, alias.TierID)
-			} else if exists {
+			if _, exists := memberModels[modelID]; exists {
 				return fmt.Errorf("%s.model-key: duplicate member in tier %q", memberPath, alias.TierID)
 			}
-			modelTier[modelID] = alias.TierID
+			memberModels[modelID] = struct{}{}
 			if !signedDecimalPattern.MatchString(member.ModelScore) || member.ModelScore == "-0" {
 				return fmt.Errorf("%s.model-score: must be a canonical signed decimal string", memberPath)
 			}
@@ -265,9 +263,6 @@ func (cfg *Config) validateFailurePolicy() error {
 	}
 	if !policy.AutomaticFailover {
 		return fmt.Errorf("model-routing.failure-policy.automatic-failover: must be true")
-	}
-	if policy.MaxCandidateAttempts < 2 {
-		return fmt.Errorf("model-routing.failure-policy.max-candidate-attempts: must be at least 2")
 	}
 	if err := validateFailoverRules(policy.FailoverRules); err != nil {
 		return err
