@@ -10,7 +10,7 @@ const (
 	ProtocolAnthropicMessages = "anthropic_messages"
 )
 
-// Config is the native CLIProxy model-routing v2 projection.
+// Config is the native CLIProxy model-routing v3 projection.
 type Config struct {
 	SchemaVersion    int           `yaml:"schema-version" json:"schema-version"`
 	Generation       uint64        `yaml:"generation" json:"generation"`
@@ -40,7 +40,7 @@ type VariantKey struct {
 	VariantID string   `yaml:"variant-id" json:"variant-id"`
 }
 
-// Alias is one AI Hub tier and its globally allocated model members.
+// Alias is one independent AI Hub lane and its eligible model members.
 type Alias struct {
 	Name       string   `yaml:"name" json:"name"`
 	TierID     string   `yaml:"tier-id" json:"tier-id"`
@@ -49,7 +49,7 @@ type Alias struct {
 	Members    []Member `yaml:"members" json:"members"`
 }
 
-// Member is one exclusively allocated canonical model. Candidates contain all
+// Member is one lane's canonical model. Candidates contain all
 // executable routes for that model; member and route ranks are independent.
 type Member struct {
 	ModelKey        ModelKey    `yaml:"model-key" json:"model-key"`
@@ -193,7 +193,6 @@ type FailurePolicy struct {
 	CredentialAcquisitionTimeoutSeconds int            `yaml:"credential-acquisition-timeout-seconds" json:"credential-acquisition-timeout-seconds"`
 	AutomaticRetry                      bool           `yaml:"automatic-retry" json:"automatic-retry"`
 	AutomaticFailover                   bool           `yaml:"automatic-failover" json:"automatic-failover"`
-	MaxCandidateAttempts                int            `yaml:"max-candidate-attempts" json:"max-candidate-attempts"`
 	FailoverRules                       []FailoverRule `yaml:"failover-rules" json:"failover-rules"`
 	ServeStaleOnError                   bool           `yaml:"serve-stale-on-error" json:"serve-stale-on-error"`
 	PreserveFirstError                  bool           `yaml:"preserve-first-error" json:"preserve-first-error"`

@@ -66,7 +66,7 @@ func managementRoutingProjection() *modelrouting.Config {
 		}},
 		FailurePolicy: modelrouting.FailurePolicy{
 			Mode: "classified_candidate_failover", CredentialAcquisitionTimeoutSeconds: 120,
-			AutomaticRetry: false, AutomaticFailover: true, MaxCandidateAttempts: 3,
+			AutomaticRetry: false, AutomaticFailover: true,
 			FailoverRules: []modelrouting.FailoverRule{{
 				RuleID: "capacity", HTTPStatuses: []int{429},
 				ErrorCodes:   []string{"credential_concurrency_exceeded", "model_cooldown", "rate_limit"},
@@ -97,6 +97,15 @@ func TestPutConfigYAMLReturnsActiveDigestReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	projection := managementRoutingProjection()
+	shared := projection.Aliases[0]
+	shared.Name = "aihub-shared"
+	shared.TierID = "shared"
+	projection.Aliases = append(projection.Aliases, shared)
+	digest, errDigest := modelrouting.ProjectionDigest(projection)
+	if errDigest != nil {
+		t.Fatal(errDigest)
+	}
+	projection.ProjectionDigest = digest
 	payload, err := yaml.Marshal(&config.Config{
 		Port:               8317,
 		CredentialInFlight: config.DefaultCredentialInFlightConfig(),

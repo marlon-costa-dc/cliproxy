@@ -116,7 +116,7 @@ type modelRoutingTestRuntime struct {
 	secondCredential string
 }
 
-func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttemptExecutor, acquisitionTimeoutSeconds int) modelRoutingTestRuntime {
+func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttemptExecutor, acquisitionTimeoutSeconds int, additional ...*modelRoutingAttemptExecutor) modelRoutingTestRuntime {
 	t.Helper()
 	if first == nil || second == nil {
 		t.Fatal("model-routing test executors must not be nil")
@@ -179,6 +179,13 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 	}
 	firstRoute := route(first.identifier, firstRefs)
 	secondRoute := route(second.identifier, secondRefs)
+	routes := []modelrouting.DirectRoute{firstRoute, secondRoute}
+	for _, executor := range additional {
+		id := "credential-" + uuid.NewString()
+		manager.RegisterExecutor(executor)
+		register(id, executor.identifier)
+		routes = append(routes, route(executor.identifier, credentialRefs(id)))
+	}
 	candidate := func(rank int, route modelrouting.DirectRoute) modelrouting.Candidate {
 		return modelrouting.Candidate{
 			RouteKey:               route.RouteKey,
@@ -190,24 +197,28 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 			Restrictions: []modelrouting.Restriction{}, SelectionReason: "ranked",
 		}
 	}
+	candidates := make([]modelrouting.Candidate, 0, len(routes))
+	for index, directRoute := range routes {
+		candidates = append(candidates, candidate(index+1, directRoute))
+	}
 	projection := &modelrouting.Config{
 		SchemaVersion: modelrouting.SchemaVersion, Generation: 1,
 		SnapshotDigest:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		ProjectionDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		DirectModels: []modelrouting.DirectModel{{
 			ModelKey: modelKey, DisplayName: requestedModel, Active: true,
-			Variants: []modelrouting.Variant{}, Routes: []modelrouting.DirectRoute{firstRoute, secondRoute},
+			Variants: []modelrouting.Variant{}, Routes: routes,
 		}},
 		Aliases: []modelrouting.Alias{{
 			Name: "aihub-primary", TierID: "primary", Selectable: true, Reason: "selected",
 			Members: []modelrouting.Member{{
 				ModelKey: modelKey, MemberRank: 1, ModelScore: "1", SelectionReason: "selected member",
-				Candidates: []modelrouting.Candidate{candidate(1, firstRoute), candidate(2, secondRoute)},
+				Candidates: candidates,
 			}},
 		}},
 		FailurePolicy: modelrouting.FailurePolicy{
 			Mode: "classified_candidate_failover", CredentialAcquisitionTimeoutSeconds: acquisitionTimeoutSeconds,
-			AutomaticRetry: false, AutomaticFailover: true, MaxCandidateAttempts: 2,
+			AutomaticRetry: false, AutomaticFailover: true,
 			FailoverRules: []modelrouting.FailoverRule{{
 				RuleID: "capacity", HTTPStatuses: []int{429},
 				ErrorCodes:   []string{"credential_concurrency_exceeded", "model_cooldown", "rate_limit"},
@@ -667,6 +678,8 @@ func TestModelRoutingCredentialPreparationPersistenceFailureStopsBeforeUpstream(
 
 func TestModelRoutingAllExecutionSurfacesAttemptEachCandidateOnce(t *testing.T) {
 	firstCause := &Error{Code: "upstream_failure", Message: "first upstream cause", HTTPStatus: http.StatusInternalServerError}
+	lastCause := &Error{Code: "upstream_failure", Message: "last upstream cause", HTTPStatus: http.StatusServiceUnavailable}
+	providers := []string{"route-first", "route-second", "route-third", "route-fourth"}
 	tests := []struct {
 		name  string
 		run   func(modelRoutingTestRuntime) error
@@ -675,7 +688,7 @@ func TestModelRoutingAllExecutionSurfacesAttemptEachCandidateOnce(t *testing.T) 
 		{
 			name: "execute",
 			run: func(runtime modelRoutingTestRuntime) error {
-				_, err := runtime.manager.Execute(context.Background(), []string{"route-first", "route-second"}, cliproxyexecutor.Request{Model: runtime.requestedModel}, modelRoutingOptions())
+				_, err := runtime.manager.Execute(context.Background(), providers, cliproxyexecutor.Request{Model: runtime.requestedModel}, modelRoutingOptions())
 				return err
 			},
 			calls: func(executor *modelRoutingAttemptExecutor) int32 { return executor.executeCalls.Load() },
@@ -683,7 +696,7 @@ func TestModelRoutingAllExecutionSurfacesAttemptEachCandidateOnce(t *testing.T) 
 		{
 			name: "count tokens",
 			run: func(runtime modelRoutingTestRuntime) error {
-				_, err := runtime.manager.ExecuteCount(context.Background(), []string{"route-first", "route-second"}, cliproxyexecutor.Request{Model: runtime.requestedModel}, modelRoutingOptions())
+				_, err := runtime.manager.ExecuteCount(context.Background(), providers, cliproxyexecutor.Request{Model: runtime.requestedModel}, modelRoutingOptions())
 				return err
 			},
 			calls: func(executor *modelRoutingAttemptExecutor) int32 { return executor.countCalls.Load() },
@@ -691,28 +704,89 @@ func TestModelRoutingAllExecutionSurfacesAttemptEachCandidateOnce(t *testing.T) 
 		{
 			name: "stream",
 			run: func(runtime modelRoutingTestRuntime) error {
-				_, err := runtime.manager.ExecuteStream(context.Background(), []string{"route-first", "route-second"}, cliproxyexecutor.Request{Model: runtime.requestedModel}, modelRoutingOptions())
+				result, err := runtime.manager.ExecuteStream(context.Background(), providers, cliproxyexecutor.Request{Model: runtime.requestedModel}, modelRoutingOptions())
+				if err == nil && result != nil {
+					for chunk := range result.Chunks {
+						if chunk.Err != nil {
+							return chunk.Err
+						}
+					}
+				}
 				return err
 			},
 			calls: func(executor *modelRoutingAttemptExecutor) int32 { return executor.streamCalls.Load() },
 		},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			first := &modelRoutingAttemptExecutor{identifier: "route-first", executeErr: firstCause, countErr: firstCause, streamErr: firstCause}
-			second := &modelRoutingAttemptExecutor{identifier: "route-second"}
-			runtime := newModelRoutingTestRuntime(t, first, second, 2)
-			errExecute := test.run(runtime)
-			if errExecute != nil {
-				t.Fatalf("execution error = %v, want classified failover success", errExecute)
-			}
-			if got := test.calls(first); got != 1 {
-				t.Fatalf("first route calls = %d, want 1", got)
-			}
-			if got := test.calls(second); got != 1 {
-				t.Fatalf("second route calls = %d, want 1", got)
-			}
-		})
+		for _, outcome := range []string{"success", "exhausted"} {
+			t.Run(test.name+"/"+outcome, func(t *testing.T) {
+				first := &modelRoutingAttemptExecutor{identifier: "route-first", executeErr: firstCause, countErr: firstCause, streamErr: firstCause}
+				second := &modelRoutingAttemptExecutor{identifier: "route-second", executeErr: firstCause, countErr: firstCause, streamErr: firstCause}
+				third := &modelRoutingAttemptExecutor{identifier: "route-third", executeErr: firstCause, countErr: firstCause, streamErr: firstCause}
+				fourth := &modelRoutingAttemptExecutor{identifier: "route-fourth"}
+				if outcome == "exhausted" {
+					fourth.executeErr, fourth.countErr, fourth.streamErr = lastCause, lastCause, lastCause
+				}
+				runtime := newModelRoutingTestRuntime(t, first, second, 2, third, fourth)
+				errExecute := test.run(runtime)
+				if outcome == "exhausted" {
+					if !errors.Is(errExecute, firstCause) || !errors.Is(errExecute, lastCause) {
+						t.Fatalf("execution error = %v, want first and final causes", errExecute)
+					}
+				} else if errExecute != nil {
+					t.Fatalf("execution error = %v, want classified failover success", errExecute)
+				}
+				for _, executor := range []*modelRoutingAttemptExecutor{first, second, third, fourth} {
+					if got := test.calls(executor); got != 1 {
+						t.Fatalf("%s calls = %d, want 1", executor.identifier, got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestModelRoutingSharedModelDoesNotCrossLanes(t *testing.T) {
+	permanent := &Error{Code: "forbidden", Message: "permanent cause", HTTPStatus: http.StatusForbidden}
+	first := &modelRoutingAttemptExecutor{identifier: "route-first", executeErr: permanent}
+	second := &modelRoutingAttemptExecutor{identifier: "route-second"}
+	runtime := newModelRoutingTestRuntime(t, first, second, 2)
+	shared := runtime.projection.Aliases[0]
+	shared.Name, shared.TierID = "aihub-shared", "shared"
+	member := shared.Members[0]
+	candidate := member.Candidates[1]
+	candidate.RouteRank = 1
+	member.Candidates = []modelrouting.Candidate{candidate}
+	shared.Members = []modelrouting.Member{member}
+	runtime.projection.Aliases = append(runtime.projection.Aliases, shared,
+		modelrouting.Alias{Name: "aihub-empty", TierID: "empty", Reason: "no eligible members", Members: []modelrouting.Member{}})
+	digest, errDigest := modelrouting.ProjectionDigest(runtime.projection)
+	if errDigest != nil {
+		t.Fatal(errDigest)
+	}
+	runtime.projection.ProjectionDigest = digest
+	prepared, errPrepare := runtime.manager.PrepareModelRouting(runtime.projection)
+	if errPrepare != nil {
+		t.Fatal(errPrepare)
+	}
+	if errActivate := runtime.manager.ActivatePreparedModelRouting(prepared); errActivate != nil {
+		t.Fatal(errActivate)
+	}
+	providers := []string{"route-first", "route-second"}
+	if _, err := runtime.manager.Execute(context.Background(), providers, cliproxyexecutor.Request{Model: "aihub-shared"}, modelRoutingOptions()); err != nil {
+		t.Fatalf("shared lane execution: %v", err)
+	}
+	if first.executeCalls.Load() != 0 || second.executeCalls.Load() != 1 {
+		t.Fatal("shared lane did not use its own ranked candidate set")
+	}
+	if _, err := runtime.manager.Execute(context.Background(), providers, cliproxyexecutor.Request{Model: runtime.requestedModel}, modelRoutingOptions()); !errors.Is(err, permanent) {
+		t.Fatalf("primary lane error = %v, want permanent cause", err)
+	}
+	if _, err := runtime.manager.Execute(context.Background(), providers, cliproxyexecutor.Request{Model: "aihub-empty"}, modelRoutingOptions()); err == nil {
+		t.Fatal("empty lane must not fall across to a selectable lane")
+	}
+	if first.executeCalls.Load() != 1 || second.executeCalls.Load() != 1 {
+		t.Fatal("permanent failure or empty lane crossed into another candidate")
 	}
 }
 
