@@ -394,7 +394,7 @@ func inventoryCredential(route registry.RegisteredRouteSnapshot, auth *coreauth.
 	suspended := strings.TrimSpace(route.SuspensionReason) != ""
 	suspensionReason := optionalTrimmed(route.SuspensionReason)
 	quotaBlocked := route.QuotaBlocked
-	var quotaReason, remaining, resetsAt *string
+	var quotaReason, remaining, resetsAt, resumesAt *string
 	observedAt := route.LastUpdated
 	selectable := auth != nil
 	status := "unknown"
@@ -403,40 +403,39 @@ func inventoryCredential(route registry.RegisteredRouteSnapshot, auth *coreauth.
 		if auth.UpdatedAt.After(observedAt) {
 			observedAt = auth.UpdatedAt
 		}
-		if auth.Disabled || auth.Status == coreauth.StatusDisabled {
-			suspended = true
-			if suspensionReason == nil {
-				suspensionReason = optionalTrimmed(auth.StatusMessage)
-			}
-		}
+		// Availability follows request-time selection, so a cooldown or quota
+		// window ends at its recovery instant instead of at the next success.
+		availability := coreauth.AvailabilityForModel(auth, route.RuntimeModelID, now)
 		quota := auth.Quota
+		statusMessage := auth.StatusMessage
 		if modelState := auth.ModelStates[route.RuntimeModelID]; modelState != nil {
 			quota = modelState.Quota
-			if modelState.Unavailable || modelState.Status == coreauth.StatusDisabled {
-				suspended = true
-				if suspensionReason == nil {
-					suspensionReason = optionalTrimmed(modelState.StatusMessage)
-				}
+			if !auth.Disabled && auth.Status != coreauth.StatusDisabled {
+				statusMessage = modelState.StatusMessage
 			}
 		}
-		if quota.Exceeded {
-			quotaBlocked = true
+		quotaBlocked = availability.QuotaCooldown
+		if quotaBlocked {
 			quotaReason = optionalTrimmed(quota.Reason)
-			if !quota.NextRecoverAt.IsZero() {
-				value := quota.NextRecoverAt.UTC().Format(time.RFC3339Nano)
-				resetsAt = &value
+			resetsAt = optionalInstant(availability.RecoverAt)
+		}
+		if availability.Blocked && !availability.QuotaCooldown {
+			if suspensionReason == nil {
+				suspensionReason = optionalTrimmed(statusMessage)
 			}
+			if !suspended {
+				resumesAt = optionalInstant(availability.RecoverAt)
+			}
+			suspended = true
 		}
 		if value := strings.TrimSpace(quota.Signals["remaining"]); value != "" {
 			remaining = &value
 		}
-		selectable = selectable && auth.Status == coreauth.StatusActive && !auth.Unavailable && !suspended && !quotaBlocked
+		selectable = !availability.Blocked && !suspended
 		status = boolStatus(selectable, "healthy", "blocked")
 		quotaStatus = boolStatus(quotaBlocked, "blocked", "available")
-	}
-	if route.QuotaResetsAt != nil && resetsAt == nil {
-		value := route.QuotaResetsAt.UTC().Format(time.RFC3339Nano)
-		resetsAt = &value
+	} else if route.QuotaResetsAt != nil {
+		resetsAt = optionalInstant(*route.QuotaResetsAt)
 	}
 	if observedAt.IsZero() {
 		observedAt = now
@@ -451,7 +450,7 @@ func inventoryCredential(route registry.RegisteredRouteSnapshot, auth *coreauth.
 			Status: quotaStatus, Remaining: remaining, ResetsAt: resetsAt, Reason: quotaReason,
 		},
 		Suspension: modelrouting.InventorySuspension{
-			Active: suspended, Reason: suspensionReason, ResumesAt: nil,
+			Active: suspended, Reason: suspensionReason, ResumesAt: resumesAt,
 		},
 		Restrictions: []modelrouting.InventoryRestriction{},
 	}
@@ -573,6 +572,14 @@ func optionalTrimmed(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func optionalInstant(value time.Time) *string {
+	if value.IsZero() {
+		return nil
+	}
+	formatted := value.UTC().Format(time.RFC3339Nano)
+	return &formatted
 }
 
 func cloneOptionalString(value *string) *string {

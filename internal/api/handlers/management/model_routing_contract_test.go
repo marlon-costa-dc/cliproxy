@@ -285,6 +285,92 @@ func TestProjectedInventoryFailsClosedForSuspendedCredential(t *testing.T) {
 	}
 }
 
+func TestProjectedInventoryQuotaCooldownEndsAtRecoveryInstant(t *testing.T) {
+	const credentialID = "credential-a"
+	const runtimeModelID = "gpt-5.4"
+	ctx := context.Background()
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, errRegister := manager.Register(ctx, &coreauth.Auth{
+		ID: credentialID, Provider: "openai", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "oauth", "quota_domain": "quota-a"},
+	}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(credentialID, "openai", []*registry.ModelInfo{{ID: runtimeModelID}})
+	t.Cleanup(func() { reg.UnregisterClient(credentialID) })
+
+	if errMark := manager.MarkResult(ctx, coreauth.Result{
+		AuthID: credentialID, Provider: "openai", Model: runtimeModelID, Success: false,
+		Error: &coreauth.Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"},
+	}); errMark != nil {
+		t.Fatalf("MarkResult() error = %v", errMark)
+	}
+	auth, ok := manager.GetByID(credentialID)
+	if !ok || auth == nil || auth.ModelStates[runtimeModelID] == nil {
+		t.Fatalf("model state after quota cooldown is missing: %+v", auth)
+	}
+	recoverAt := auth.ModelStates[runtimeModelID].Quota.NextRecoverAt
+	if recoverAt.IsZero() {
+		t.Fatal("quota cooldown without Retry-After has no recovery instant")
+	}
+	auths := map[string]*coreauth.Auth{credentialID: auth}
+	inventory := func(now time.Time) (modelrouting.InventoryModel, modelrouting.InventoryCredential) {
+		t.Helper()
+		registered := make([]registry.RegisteredRouteSnapshot, 0, 1)
+		for _, snapshot := range reg.RegisteredRouteSnapshots() {
+			if snapshot.ClientID == credentialID {
+				registered = append(registered, snapshot)
+			}
+		}
+		models := projectedInventoryModels(managementRoutingProjection(), registered, auths, now)
+		if len(models) != 1 || len(models[0].Routes) != 1 || len(models[0].Routes[0].Credentials) != 1 {
+			t.Fatalf("inventory shape = %+v", models)
+		}
+		return models[0], models[0].Routes[0].Credentials[0]
+	}
+
+	blockedModel, blocked := inventory(recoverAt.Add(-time.Nanosecond))
+	wantResetsAt := recoverAt.UTC().Format(time.RFC3339Nano)
+	if blockedModel.Active || blocked.Health.Selectable || blocked.Quota.Status != "blocked" || blocked.Quota.ResetsAt == nil || *blocked.Quota.ResetsAt != wantResetsAt || blocked.Suspension.Active {
+		t.Fatalf("inventory before recovery = model %+v credential %+v, want quota blocked until %s", blockedModel, blocked, wantResetsAt)
+	}
+
+	recoveredModel, recovered := inventory(recoverAt)
+	if !recoveredModel.Active || !recoveredModel.Routes[0].Selectable || !recovered.Health.Selectable || recovered.Quota.Status != "available" || recovered.Quota.ResetsAt != nil || recovered.Suspension.Active || recovered.Suspension.ResumesAt != nil {
+		t.Fatalf("inventory at recovery instant = model %+v credential %+v, want selectable", recoveredModel, recovered)
+	}
+
+	reg.SuspendClientModel(credentialID, runtimeModelID, "manual")
+	suspendedModel, suspended := inventory(recoverAt.Add(24 * time.Hour))
+	if suspendedModel.Active || suspended.Health.Selectable || !suspended.Suspension.Active || suspended.Suspension.Reason == nil || *suspended.Suspension.Reason != "manual" || suspended.Suspension.ResumesAt != nil {
+		t.Fatalf("inventory with explicit suspension = model %+v credential %+v, want persistent suspension", suspendedModel, suspended)
+	}
+}
+
+func TestInventoryCredentialReportsTimeBoundSuspensionResume(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	resumeAt := now.Add(time.Minute)
+	auth := &coreauth.Auth{
+		ID: "credential-a", Provider: "openai", Status: coreauth.StatusError,
+		Attributes: map[string]string{"auth_kind": "oauth", "quota_domain": "quota-a"},
+		ModelStates: map[string]*coreauth.ModelState{"gpt-5.4": {
+			Status: coreauth.StatusError, StatusMessage: "upstream unavailable", Unavailable: true, NextRetryAfter: resumeAt,
+		}},
+	}
+	route := registry.RegisteredRouteSnapshot{ClientID: "credential-a", RouteChannel: "openai", RuntimeModelID: "gpt-5.4"}
+
+	blocked := inventoryCredential(route, auth, now)
+	wantResumesAt := resumeAt.Format(time.RFC3339Nano)
+	if blocked.Health.Selectable || !blocked.Suspension.Active || blocked.Suspension.ResumesAt == nil || *blocked.Suspension.ResumesAt != wantResumesAt || blocked.Quota.Status != "available" {
+		t.Fatalf("credential before resume = %+v, want suspension resuming at %s", blocked, wantResumesAt)
+	}
+	resumed := inventoryCredential(route, auth, resumeAt)
+	if !resumed.Health.Selectable || resumed.Suspension.Active || resumed.Suspension.ResumesAt != nil {
+		t.Fatalf("credential at resume instant = %+v, want selectable", resumed)
+	}
+}
+
 func TestBootstrapInventoryFailsLoudlyForIncompleteOrManagedRoutes(t *testing.T) {
 	auth := &coreauth.Auth{
 		ID: "credential-a", Provider: "openai", RouteChannel: "openai", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
