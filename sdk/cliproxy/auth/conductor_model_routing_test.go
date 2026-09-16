@@ -931,3 +931,78 @@ func TestModelRoutingNeverFailsOverAfterFirstStreamPayload(t *testing.T) {
 		t.Fatalf("stream attempts = %d/%d, want 1/0", first.streamCalls.Load(), second.streamCalls.Load())
 	}
 }
+
+func TestModelRoutingQuotaCooldownWithoutRetryAfterRecoversAtRecoveryInstant(t *testing.T) {
+	prev := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
+
+	routeChannel := "quota-route-" + uuid.NewString()
+	credentialID := "quota-credential-" + uuid.NewString()
+	runtimeModelID := "quota-model-" + uuid.NewString()
+	modelKey := modelrouting.ModelKey{CatalogProviderID: "catalog-provider", CanonicalModelID: runtimeModelID}
+	routeKey := modelrouting.RouteKey{ModelKey: modelKey, RouteChannel: routeChannel}
+
+	manager := NewManager(nil, nil, NoopHook{})
+	manager.RegisterExecutor(&modelRoutingAttemptExecutor{identifier: routeChannel})
+	mustRegisterAuth(t, manager, context.Background(), &Auth{
+		ID: credentialID, Provider: routeChannel, RouteChannel: routeChannel, QuotaDomain: routeChannel + "-quota", Status: StatusActive,
+		Attributes: map[string]string{AttributeAuthKind: AuthKindOAuth},
+	})
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(credentialID, routeChannel, []*registry.ModelInfo{{
+		ID: runtimeModelID, CatalogProviderID: modelKey.CatalogProviderID, CatalogModelID: modelKey.CanonicalModelID,
+		CatalogRouteProviderID: routeChannel, CatalogRouteModelID: runtimeModelID, Protocols: []string{"openai_chat"},
+	}})
+	t.Cleanup(func() { reg.UnregisterClient(credentialID) })
+
+	projection := &modelrouting.Config{DirectModels: []modelrouting.DirectModel{{
+		ModelKey: modelKey, DisplayName: runtimeModelID, Active: true,
+		Routes: []modelrouting.DirectRoute{{
+			RouteKey: routeKey, CatalogRouteProviderID: routeChannel, CatalogRouteModelID: runtimeModelID,
+			RuntimeModelID: runtimeModelID, RouteSelector: modelrouting.SelectorForRoute(routeKey, runtimeModelID),
+			QuotaDomains:   []string{routeChannel + "-quota"},
+			CredentialRefs: []modelrouting.CredentialRef{{ID: CredentialReferenceID(credentialID), Kind: "oauth"}},
+			Protocols:      []string{"openai_chat"},
+			Health:         modelrouting.Health{Status: "healthy", Selectable: true},
+			Selectable:     true,
+		}},
+	}}}
+
+	mustMarkResult(t, manager, context.Background(), Result{
+		AuthID: credentialID, Provider: routeChannel, Model: runtimeModelID, Success: false,
+		Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"},
+	})
+
+	if reason := reg.GetClientModelSuspensionReason(credentialID, runtimeModelID); reason != "" {
+		t.Fatalf("registry suspension after quota cooldown = %q, want none", reason)
+	}
+	auth, ok := manager.GetByID(credentialID)
+	if !ok || auth == nil || auth.ModelStates[runtimeModelID] == nil {
+		t.Fatalf("model state after quota cooldown is missing: %+v", auth)
+	}
+	recoverAt := auth.ModelStates[runtimeModelID].Quota.NextRecoverAt
+	if recoverAt.IsZero() {
+		t.Fatal("quota cooldown without Retry-After has no recovery instant")
+	}
+
+	errBlocked := manager.validateModelRoutingRuntime(projection, recoverAt.Add(-time.Nanosecond))
+	if errBlocked == nil || !strings.Contains(errBlocked.Error(), "credential-refs: differ from selectable live credentials") {
+		t.Fatalf("runtime validation before recovery error = %v, want credential excluded", errBlocked)
+	}
+
+	if errRecovered := manager.validateModelRoutingRuntime(projection, recoverAt); errRecovered != nil {
+		t.Fatalf("runtime validation at recovery instant error = %v", errRecovered)
+	}
+	table := compileModelRouting(projection)
+	candidates := table.direct[strings.ToLower(runtimeModelID)]
+	if len(candidates) != 1 || len(candidates[0].CredentialRefs) != 1 || candidates[0].CredentialRefs[0].ID != CredentialReferenceID(credentialID) {
+		t.Fatalf("recovered routing candidates = %+v, want the recovered credential", candidates)
+	}
+
+	reg.SuspendClientModel(credentialID, runtimeModelID, "manual")
+	errSuspended := manager.validateModelRoutingRuntime(projection, recoverAt.Add(24*time.Hour))
+	if errSuspended == nil || !strings.Contains(errSuspended.Error(), "credential-refs: differ from selectable live credentials") {
+		t.Fatalf("runtime validation with explicit suspension error = %v, want credential excluded", errSuspended)
+	}
+}
