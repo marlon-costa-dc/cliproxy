@@ -1006,3 +1006,65 @@ func TestModelRoutingQuotaCooldownWithoutRetryAfterRecoversAtRecoveryInstant(t *
 		t.Fatalf("runtime validation with explicit suspension error = %v, want credential excluded", errSuspended)
 	}
 }
+
+func TestModelRoutingClassifiedQuotaFailureFailsOverToNextRoute(t *testing.T) {
+	// Native failover: a classified quota failure (429, e.g. a weekly
+	// credential cap) on the first projected route advances the request to
+	// the next projected route, which serves it — exactly how an aihub-*
+	// lane member recovers when one account's quota is exhausted.
+	primary := &modelRoutingAttemptExecutor{identifier: "route-primary"}
+	primary.executeFn = func(_ context.Context, _ *Auth) (cliproxyexecutor.Response, error) {
+		return cliproxyexecutor.Response{}, &Error{
+			Code: "quota_exhausted", Message: "weekly credential cap reached",
+			HTTPStatus: http.StatusTooManyRequests,
+		}
+	}
+	healthy := &modelRoutingAttemptExecutor{identifier: "route-healthy"}
+	runtime := newModelRoutingTestRuntime(t, primary, healthy, 2)
+
+	response, errExecute := runtime.manager.Execute(
+		context.Background(),
+		[]string{primary.identifier, healthy.identifier},
+		cliproxyexecutor.Request{Model: runtime.requestedModel, Payload: []byte(`{"messages":[]}`)},
+		modelRoutingOptions(),
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v, want native failover success", errExecute)
+	}
+	if got := primary.executeCalls.Load(); got != 1 {
+		t.Fatalf("primary route calls = %d, want 1", got)
+	}
+	if got := healthy.executeCalls.Load(); got != 1 {
+		t.Fatalf("healthy route calls = %d, want 1", got)
+	}
+	if got := string(response.Payload); got != `{"choices":[{"message":{"content":"ok"}}]}` {
+		t.Fatalf("Execute() payload = %s, want the healthy route response", got)
+	}
+}
+
+func TestModelRoutingEmptyLaneStopsItsOwnConsumersWithoutCrossing(t *testing.T) {
+	// ADR-0023 lane isolation: an empty (selectable=false) lane surfaces the
+	// 503 route_not_selectable contract error and the consumer assigned to it
+	// stops WITHOUT crossing into another lane, even when a healthy lane
+	// exists in the same projection.
+	emptyLaneCause := routingContractError("route_not_selectable", "selected route has no executable runtime model", http.StatusServiceUnavailable)
+	emptyLane := &modelRoutingAttemptExecutor{identifier: "route-empty-lane", executeErr: emptyLaneCause}
+	healthy := &modelRoutingAttemptExecutor{identifier: "route-healthy"}
+	runtime := newModelRoutingTestRuntime(t, emptyLane, healthy, 2)
+
+	_, errExecute := runtime.manager.Execute(
+		context.Background(),
+		[]string{emptyLane.identifier},
+		cliproxyexecutor.Request{Model: runtime.requestedModel, Payload: []byte(`{"messages":[]}`)},
+		modelRoutingOptions(),
+	)
+	if !errors.Is(errExecute, emptyLaneCause) {
+		t.Fatalf("Execute() error = %v, want exact route_not_selectable cause", errExecute)
+	}
+	if got := emptyLane.executeCalls.Load(); got != 1 {
+		t.Fatalf("empty lane route calls = %d, want 1", got)
+	}
+	if got := healthy.executeCalls.Load(); got != 0 {
+		t.Fatalf("healthy route calls = %d, want 0 (lanes never cross)", got)
+	}
+}

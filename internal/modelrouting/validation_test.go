@@ -275,3 +275,38 @@ func TestUnmarshalRejectsRemovedRequestTimeout(t *testing.T) {
 		t.Fatalf("Unmarshal() error = %v, want removed request timeout rejection", err)
 	}
 }
+
+func TestEmptyDirectModelsProjectionIsValid(t *testing.T) {
+	t.Parallel()
+	// ADR-0023: a fleet-wide empty projection (every lane empty with
+	// selectable=false) is a publishable state; execution answers 503
+	// route_not_selectable instead of invalidating the whole generation.
+	cfg := Config{
+		SchemaVersion:    SchemaVersion,
+		Generation:       8,
+		SnapshotDigest:   testDigest,
+		ProjectionDigest: testDigest,
+		DirectModels:     []DirectModel{},
+		Aliases: []Alias{{
+			Name: "aihub-balanced", TierID: "balanced", Selectable: false,
+			Reason: "no healthy eligible model is available in this lane",
+		}},
+		FailurePolicy: FailurePolicy{
+			Mode: "classified_candidate_failover", CredentialAcquisitionTimeoutSeconds: 30,
+			AutomaticRetry: false, AutomaticFailover: true,
+			FailoverRules: []FailoverRule{{
+				RuleID: "transient", HTTPStatuses: []int{429, 503}, ErrorCodes: []string{"overloaded"},
+				FailureKinds: []FailureKind{FailureKindCredential, FailureKindTransport},
+			}}, ServeStaleOnError: false,
+			PreserveFirstError: true, TerminateOwnedRequestOnCancel: true,
+		},
+	}
+	digest, err := ProjectionDigest(&cfg)
+	if err != nil {
+		t.Fatalf("ProjectionDigest() error = %v", err)
+	}
+	cfg.ProjectionDigest = digest
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want empty direct-models projection to be valid", err)
+	}
+}
