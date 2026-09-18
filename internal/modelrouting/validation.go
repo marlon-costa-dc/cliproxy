@@ -124,9 +124,11 @@ func (cfg *Config) Validate() error {
 	if err := cfg.validateFailurePolicy(); err != nil {
 		return err
 	}
-	if len(cfg.DirectModels) == 0 {
-		return fmt.Errorf("model-routing.direct-models: must not be empty")
-	}
+	// ADR-0023: a projection with zero direct models (every lane empty with
+	// selectable=false) is a publishable fleet state, not an invalid one.
+	// Execution answers such requests with 503 route_not_selectable; rejecting
+	// the publication here would invalidate the whole generation and
+	// reintroduce the v2 hold-the-generation defect.
 
 	models := make(map[string]DirectModel, len(cfg.DirectModels))
 	routes := make(map[string]DirectRoute)
