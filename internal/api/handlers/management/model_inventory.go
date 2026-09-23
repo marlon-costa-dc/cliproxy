@@ -62,7 +62,12 @@ func (h *Handler) GetModelInventory(c *gin.Context) {
 	if projection != nil {
 		inventory.DirectModels = projectedInventoryModels(projection, registered, auths, now)
 		inventory.Aliases = projectedInventoryAliases(projection)
-	} else {
+	}
+	// The activated view of the active providers is the authority this surface
+	// serves (the model pipeline reads it as its cycle source): a published
+	// projection that carries no direct models — live or stale — must never
+	// shadow it, so fall back to the runtime registry's bootstrap view.
+	if len(inventory.DirectModels) == 0 {
 		models, errBootstrap := bootstrapInventoryModels(registered, auths, now)
 		if errBootstrap != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("build model inventory: %v", errBootstrap)})
