@@ -140,6 +140,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 				applyFingerprintProfileAttribute(auth, metadata)
+				if auth.QuotaDomain == "" {
+					auth.QuotaDomain = provider
+				}
 			}
 			if len(auths) == 1 && strings.EqualFold(auths[0].Provider, "gemini-cli") {
 				if virtuals := SynthesizeGeminiVirtualAuths(auths[0], metadata, now); len(virtuals) > 0 {
@@ -197,10 +200,13 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	a := &coreauth.Auth{
 		ID:       id,
 		Provider: provider,
-		Label:    label,
-		Prefix:   prefix,
-		Status:   status,
-		Disabled: disabled,
+		// File-based OAuth credentials have no per-file quota configuration.
+		// Their canonical provider identity is the canonical quota pool.
+		QuotaDomain: provider,
+		Label:       label,
+		Prefix:      prefix,
+		Status:      status,
+		Disabled:    disabled,
 		Attributes: map[string]string{
 			coreauth.AttributeSource:        fullPath,
 			coreauth.AttributePath:          fullPath,

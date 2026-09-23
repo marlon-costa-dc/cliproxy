@@ -899,9 +899,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 								NextRecoverAt: next,
 								BackoffLevel:  backoffLevel,
 							})
+							// Quota exhaustion is time-bound: the model state carries
+							// NextRecoverAt and the registry quota mark expires on its
+							// own. An open-ended registry suspension would outlive the
+							// recovery instant and hide the credential from routing.
 							if !disableCooling {
-								suspendReason = "quota"
-								shouldSuspendModel = true
 								setModelQuota = true
 							}
 							if result.CredentialScope && !disableCooling {

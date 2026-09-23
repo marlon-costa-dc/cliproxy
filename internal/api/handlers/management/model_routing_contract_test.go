@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,7 +44,7 @@ func managementRoutingProjection() *modelrouting.Config {
 		Pricing: pricing, Selectable: true, SelectionReason: "eligible",
 	}
 	projection := &modelrouting.Config{
-		SchemaVersion: 2, Generation: 1, SnapshotDigest: contractSnapshotDigest,
+		SchemaVersion: modelrouting.SchemaVersion, Generation: 1, SnapshotDigest: contractSnapshotDigest,
 		ProjectionDigest: contractSnapshotDigest,
 		DirectModels: []modelrouting.DirectModel{{
 			ModelKey: modelKey, DisplayName: "GPT-5.4", Active: true,
@@ -65,7 +66,7 @@ func managementRoutingProjection() *modelrouting.Config {
 		}},
 		FailurePolicy: modelrouting.FailurePolicy{
 			Mode: "classified_candidate_failover", CredentialAcquisitionTimeoutSeconds: 120,
-			AutomaticRetry: false, AutomaticFailover: true, MaxCandidateAttempts: 3,
+			AutomaticRetry: false, AutomaticFailover: true,
 			FailoverRules: []modelrouting.FailoverRule{{
 				RuleID: "capacity", HTTPStatuses: []int{429},
 				ErrorCodes:   []string{"credential_concurrency_exceeded", "model_cooldown", "rate_limit"},
@@ -96,6 +97,15 @@ func TestPutConfigYAMLReturnsActiveDigestReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	projection := managementRoutingProjection()
+	shared := projection.Aliases[0]
+	shared.Name = "aihub-shared"
+	shared.TierID = "shared"
+	projection.Aliases = append(projection.Aliases, shared)
+	digest, errDigest := modelrouting.ProjectionDigest(projection)
+	if errDigest != nil {
+		t.Fatal(errDigest)
+	}
+	projection.ProjectionDigest = digest
 	payload, err := yaml.Marshal(&config.Config{
 		Port:               8317,
 		CredentialInFlight: config.DefaultCredentialInFlightConfig(),
@@ -123,7 +133,7 @@ func TestPutConfigYAMLReturnsActiveDigestReceipt(t *testing.T) {
 			ConfigDigest:     modelrouting.ConfigDigest(body),
 		}
 		return parsed, &modelrouting.ActivationReceiptV2{
-			Active: active, RoutingSchema: modelrouting.RoutingSchemaInfo{Version: 2, Digest: modelrouting.SchemaDigest()}, LoadedAt: loadedAt,
+			Active: active, RoutingSchema: modelrouting.RoutingSchemaInfo{Version: 3, Digest: modelrouting.SchemaDigest()}, LoadedAt: loadedAt,
 		}, nil
 	})
 	recorder := httptest.NewRecorder()
@@ -275,6 +285,92 @@ func TestProjectedInventoryFailsClosedForSuspendedCredential(t *testing.T) {
 	}
 }
 
+func TestProjectedInventoryQuotaCooldownEndsAtRecoveryInstant(t *testing.T) {
+	const credentialID = "credential-a"
+	const runtimeModelID = "gpt-5.4"
+	ctx := context.Background()
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, errRegister := manager.Register(ctx, &coreauth.Auth{
+		ID: credentialID, Provider: "openai", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "oauth", "quota_domain": "quota-a"},
+	}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(credentialID, "openai", []*registry.ModelInfo{{ID: runtimeModelID}})
+	t.Cleanup(func() { reg.UnregisterClient(credentialID) })
+
+	if errMark := manager.MarkResult(ctx, coreauth.Result{
+		AuthID: credentialID, Provider: "openai", Model: runtimeModelID, Success: false,
+		Error: &coreauth.Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"},
+	}); errMark != nil {
+		t.Fatalf("MarkResult() error = %v", errMark)
+	}
+	auth, ok := manager.GetByID(credentialID)
+	if !ok || auth == nil || auth.ModelStates[runtimeModelID] == nil {
+		t.Fatalf("model state after quota cooldown is missing: %+v", auth)
+	}
+	recoverAt := auth.ModelStates[runtimeModelID].Quota.NextRecoverAt
+	if recoverAt.IsZero() {
+		t.Fatal("quota cooldown without Retry-After has no recovery instant")
+	}
+	auths := map[string]*coreauth.Auth{credentialID: auth}
+	inventory := func(now time.Time) (modelrouting.InventoryModel, modelrouting.InventoryCredential) {
+		t.Helper()
+		registered := make([]registry.RegisteredRouteSnapshot, 0, 1)
+		for _, snapshot := range reg.RegisteredRouteSnapshots() {
+			if snapshot.ClientID == credentialID {
+				registered = append(registered, snapshot)
+			}
+		}
+		models := projectedInventoryModels(managementRoutingProjection(), registered, auths, now)
+		if len(models) != 1 || len(models[0].Routes) != 1 || len(models[0].Routes[0].Credentials) != 1 {
+			t.Fatalf("inventory shape = %+v", models)
+		}
+		return models[0], models[0].Routes[0].Credentials[0]
+	}
+
+	blockedModel, blocked := inventory(recoverAt.Add(-time.Nanosecond))
+	wantResetsAt := recoverAt.UTC().Format(time.RFC3339Nano)
+	if blockedModel.Active || blocked.Health.Selectable || blocked.Quota.Status != "blocked" || blocked.Quota.ResetsAt == nil || *blocked.Quota.ResetsAt != wantResetsAt || blocked.Suspension.Active {
+		t.Fatalf("inventory before recovery = model %+v credential %+v, want quota blocked until %s", blockedModel, blocked, wantResetsAt)
+	}
+
+	recoveredModel, recovered := inventory(recoverAt)
+	if !recoveredModel.Active || !recoveredModel.Routes[0].Selectable || !recovered.Health.Selectable || recovered.Quota.Status != "available" || recovered.Quota.ResetsAt != nil || recovered.Suspension.Active || recovered.Suspension.ResumesAt != nil {
+		t.Fatalf("inventory at recovery instant = model %+v credential %+v, want selectable", recoveredModel, recovered)
+	}
+
+	reg.SuspendClientModel(credentialID, runtimeModelID, "manual")
+	suspendedModel, suspended := inventory(recoverAt.Add(24 * time.Hour))
+	if suspendedModel.Active || suspended.Health.Selectable || !suspended.Suspension.Active || suspended.Suspension.Reason == nil || *suspended.Suspension.Reason != "manual" || suspended.Suspension.ResumesAt != nil {
+		t.Fatalf("inventory with explicit suspension = model %+v credential %+v, want persistent suspension", suspendedModel, suspended)
+	}
+}
+
+func TestInventoryCredentialReportsTimeBoundSuspensionResume(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	resumeAt := now.Add(time.Minute)
+	auth := &coreauth.Auth{
+		ID: "credential-a", Provider: "openai", Status: coreauth.StatusError,
+		Attributes: map[string]string{"auth_kind": "oauth", "quota_domain": "quota-a"},
+		ModelStates: map[string]*coreauth.ModelState{"gpt-5.4": {
+			Status: coreauth.StatusError, StatusMessage: "upstream unavailable", Unavailable: true, NextRetryAfter: resumeAt,
+		}},
+	}
+	route := registry.RegisteredRouteSnapshot{ClientID: "credential-a", RouteChannel: "openai", RuntimeModelID: "gpt-5.4"}
+
+	blocked := inventoryCredential(route, auth, now)
+	wantResumesAt := resumeAt.Format(time.RFC3339Nano)
+	if blocked.Health.Selectable || !blocked.Suspension.Active || blocked.Suspension.ResumesAt == nil || *blocked.Suspension.ResumesAt != wantResumesAt || blocked.Quota.Status != "available" {
+		t.Fatalf("credential before resume = %+v, want suspension resuming at %s", blocked, wantResumesAt)
+	}
+	resumed := inventoryCredential(route, auth, resumeAt)
+	if !resumed.Health.Selectable || resumed.Suspension.Active || resumed.Suspension.ResumesAt != nil {
+		t.Fatalf("credential at resume instant = %+v, want selectable", resumed)
+	}
+}
+
 func TestBootstrapInventoryFailsLoudlyForIncompleteOrManagedRoutes(t *testing.T) {
 	auth := &coreauth.Auth{
 		ID: "credential-a", Provider: "openai", RouteChannel: "openai", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
@@ -316,7 +412,7 @@ func TestBootstrapInventoryFailsLoudlyForIncompleteOrManagedRoutes(t *testing.T)
 	}
 }
 
-// TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts pins the
+// TestBootstrapInventorySurfacesRoutesThatCannotDeclareCatalogFacts pins the
 // distinction the bootstrap has to make. Only openai-compatibility models carry
 // catalog facts: buildConfigModels (which serves claude-api-key, xai, gemini and
 // codex) never sets CatalogProviderID, CatalogModelID, CatalogRouteProviderID,
@@ -324,9 +420,9 @@ func TestBootstrapInventoryFailsLoudlyForIncompleteOrManagedRoutes(t *testing.T)
 // whose type has nowhere to put those facts strands generation one, because the
 // projection that would supply them can only be published once the inventory
 // answers. A route that declares none of them is simply not catalog-declared and
-// is skipped; a route that declares some of them is malformed and must still
-// fail loudly.
-func TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts(t *testing.T) {
+// is surfaced under its channel identity; a route that declares some of them is
+// malformed and must still fail loudly.
+func TestBootstrapInventorySurfacesRoutesThatCannotDeclareCatalogFacts(t *testing.T) {
 	auth := &coreauth.Auth{
 		ID: "credential-a", Provider: "anthropic", RouteChannel: "claude", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
 		Attributes: map[string]string{"auth_kind": "api_key"},
@@ -399,6 +495,68 @@ func TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts(t *testing.T
 		const want = "registered route 0 contains a managed alias before projection"
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("bootstrapInventoryModels() error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("every credential of a surfaced route is kept", func(t *testing.T) {
+		secondAuth := &coreauth.Auth{
+			ID: "credential-b", Provider: "anthropic", RouteChannel: "claude", QuotaDomain: "quota-b", Status: coreauth.StatusActive,
+			Attributes: map[string]string{"auth_kind": "api_key"},
+		}
+		duplicate := claudeRoute
+		duplicate.ClientID = secondAuth.ID
+		models, err := bootstrapInventoryModels(
+			[]registry.RegisteredRouteSnapshot{claudeRoute, duplicate},
+			map[string]*coreauth.Auth{claudeRoute.ClientID: auth, secondAuth.ID: secondAuth},
+			time.Now(),
+		)
+		if err != nil {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+		}
+		if len(models) != 1 || len(models[0].Routes) != 1 {
+			t.Fatalf("bootstrapInventoryModels() built %d models / %d routes, want 1/1", len(models), len(models[0].Routes))
+		}
+		if got := len(models[0].Routes[0].Credentials); got != 2 {
+			t.Fatalf("surfaced route carries %d credentials, want 2 (a duplicate channel+model pair must not drop credentials)", got)
+		}
+	})
+
+	t.Run("catalog route credentials survive slice growth across three routes of one model", func(t *testing.T) {
+		registryRoutes := make([]registry.RegisteredRouteSnapshot, 0, 6)
+		registryAuths := map[string]*coreauth.Auth{}
+		for channelIndex := 0; channelIndex < 3; channelIndex++ {
+			channel := fmt.Sprintf("compat-%d", channelIndex)
+			for credentialIndex := 0; credentialIndex < 2; credentialIndex++ {
+				credentialID := fmt.Sprintf("credential-%d-%d", channelIndex, credentialIndex)
+				registryAuths[credentialID] = &coreauth.Auth{
+					ID: credentialID, Provider: channel, RouteChannel: channel,
+					QuotaDomain: fmt.Sprintf("quota-%d-%d", channelIndex, credentialIndex), Status: coreauth.StatusActive,
+					Attributes: map[string]string{"auth_kind": "api_key"},
+				}
+				registryRoutes = append(registryRoutes, registry.RegisteredRouteSnapshot{
+					ClientID: credentialID, RouteChannel: channel, RuntimeModelID: "glm-5.3",
+					Model: &registry.ModelInfo{
+						ID: "glm-5.3", CatalogProviderID: "zhipuai", CatalogModelID: "glm-5.3",
+						CatalogRouteProviderID: "zhipuai", CatalogRouteModelID: "glm-5.3",
+						Protocols: []string{"openai_chat"},
+					},
+				})
+			}
+		}
+		models, err := bootstrapInventoryModels(registryRoutes, registryAuths, time.Now())
+		if err != nil {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+		}
+		if len(models) != 1 {
+			t.Fatalf("bootstrapInventoryModels() built %d models, want 1", len(models))
+		}
+		for _, route := range models[0].Routes {
+			if got := len(route.Credentials); got != 2 {
+				t.Fatalf("route %s carries %d credentials, want 2 (slice growth must not orphan route bookkeeping)", route.RouteKey.RouteChannel, got)
+			}
+		}
+		if got := len(models[0].Routes); got != 3 {
+			t.Fatalf("model carries %d routes, want 3", got)
 		}
 	})
 }

@@ -110,7 +110,7 @@ func (m *Manager) PrepareModelRouting(projection *modelrouting.Config) (*Prepare
 	if errValidate := validateRoutingVariantExecutors(projection); errValidate != nil {
 		return nil, fmt.Errorf("validate model routing variant executors: %w", errValidate)
 	}
-	if errValidate := m.validateModelRoutingRuntime(projection); errValidate != nil {
+	if errValidate := m.validateModelRoutingRuntime(projection, time.Now()); errValidate != nil {
 		return nil, fmt.Errorf("validate model routing runtime: %w", errValidate)
 	}
 	return &PreparedModelRouting{table: compileModelRouting(projection)}, nil
@@ -148,7 +148,7 @@ func validateRoutingVariantExecutors(projection *modelrouting.Config) error {
 	return nil
 }
 
-func (m *Manager) validateModelRoutingRuntime(projection *modelrouting.Config) error {
+func (m *Manager) validateModelRoutingRuntime(projection *modelrouting.Config, now time.Time) error {
 	if projection == nil {
 		return nil
 	}
@@ -191,10 +191,13 @@ func (m *Manager) validateModelRoutingRuntime(projection *modelrouting.Config) e
 				if executorKeyFromAuth(auth) != channel {
 					return fmt.Errorf("%s: registered route %d credential channel differs from the route", path, registeredIndex)
 				}
-				if snapshot.QuotaBlocked || snapshot.SuspensionReason != "" {
+				// The credential state owns quota windows and their exact
+				// recovery instant; the registry quota mark is a coarser
+				// listing hint and must not outlive that instant.
+				if snapshot.SuspensionReason != "" {
 					continue
 				}
-				blocked, _, _ := isAuthBlockedForModel(auth, route.RuntimeModelID, time.Now())
+				blocked, _, _ := isAuthBlockedForModel(auth, route.RuntimeModelID, now)
 				if blocked {
 					continue
 				}

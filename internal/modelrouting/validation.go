@@ -102,7 +102,7 @@ func (cfg *Config) Validate() error {
 	if cfg == nil {
 		return fmt.Errorf("model-routing: projection is required")
 	}
-	if cfg.SchemaVersion != 2 {
+	if cfg.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("model-routing.schema-version: unsupported value %d", cfg.SchemaVersion)
 	}
 	if cfg.Generation == 0 {
@@ -124,9 +124,11 @@ func (cfg *Config) Validate() error {
 	if err := cfg.validateFailurePolicy(); err != nil {
 		return err
 	}
-	if len(cfg.DirectModels) == 0 {
-		return fmt.Errorf("model-routing.direct-models: must not be empty")
-	}
+	// ADR-0023: a projection with zero direct models (every lane empty with
+	// selectable=false) is a publishable fleet state, not an invalid one.
+	// Execution answers such requests with 503 route_not_selectable; rejecting
+	// the publication here would invalidate the whole generation and
+	// reintroduce the v2 hold-the-generation defect.
 
 	models := make(map[string]DirectModel, len(cfg.DirectModels))
 	routes := make(map[string]DirectRoute)
@@ -178,7 +180,6 @@ func (cfg *Config) Validate() error {
 
 	aliases := make(map[string]struct{}, len(cfg.Aliases))
 	tiers := make(map[string]struct{}, len(cfg.Aliases))
-	modelTier := make(map[string]string)
 	for aliasIndex, alias := range cfg.Aliases {
 		path := fmt.Sprintf("model-routing.aliases[%d]", aliasIndex)
 		if err := requireCanonical(path+".name", alias.Name); err != nil {
@@ -201,6 +202,7 @@ func (cfg *Config) Validate() error {
 		if err := requireCanonical(path+".reason", alias.Reason); err != nil {
 			return err
 		}
+		memberModels := make(map[string]struct{}, len(alias.Members))
 		for memberIndex, member := range alias.Members {
 			memberPath := fmt.Sprintf("%s.members[%d]", path, memberIndex)
 			if member.MemberRank != memberIndex+1 {
@@ -214,12 +216,10 @@ func (cfg *Config) Validate() error {
 			if !exists || !model.Active {
 				return fmt.Errorf("%s.model-key: member does not reference an active direct model", memberPath)
 			}
-			if assignedTier, exists := modelTier[modelID]; exists && assignedTier != alias.TierID {
-				return fmt.Errorf("%s.model-key: ModelKey is assigned to tiers %q and %q", memberPath, assignedTier, alias.TierID)
-			} else if exists {
+			if _, exists := memberModels[modelID]; exists {
 				return fmt.Errorf("%s.model-key: duplicate member in tier %q", memberPath, alias.TierID)
 			}
-			modelTier[modelID] = alias.TierID
+			memberModels[modelID] = struct{}{}
 			if !signedDecimalPattern.MatchString(member.ModelScore) || member.ModelScore == "-0" {
 				return fmt.Errorf("%s.model-score: must be a canonical signed decimal string", memberPath)
 			}
@@ -265,9 +265,6 @@ func (cfg *Config) validateFailurePolicy() error {
 	}
 	if !policy.AutomaticFailover {
 		return fmt.Errorf("model-routing.failure-policy.automatic-failover: must be true")
-	}
-	if policy.MaxCandidateAttempts < 2 {
-		return fmt.Errorf("model-routing.failure-policy.max-candidate-attempts: must be at least 2")
 	}
 	if err := validateFailoverRules(policy.FailoverRules); err != nil {
 		return err
