@@ -116,12 +116,11 @@ func TestPollForTokenExchangesDeviceCode(t *testing.T) {
 	defer server.Close()
 
 	auth := NewXAIAuth(nil)
-	auth.minPollInterval = time.Millisecond
 	tokenData, err := auth.PollForToken(context.Background(), &DeviceCodeResponse{
 		DeviceCode:    "device-abc",
 		UserCode:      "ABCD-1234",
 		ExpiresIn:     60,
-		Interval:      0,
+		Interval:      1,
 		TokenEndpoint: server.URL,
 	})
 	if err != nil {
@@ -188,12 +187,11 @@ func TestPollForTokenSlowDownContinuesPolling(t *testing.T) {
 	defer server.Close()
 
 	auth := NewXAIAuth(nil)
-	auth.minPollInterval = time.Millisecond
 	tokenData, err := auth.PollForToken(context.Background(), &DeviceCodeResponse{
 		DeviceCode:    "device-abc",
 		UserCode:      "ABCD-1234",
 		ExpiresIn:     60,
-		Interval:      0,
+		Interval:      5,
 		TokenEndpoint: server.URL,
 	})
 	if err != nil {
@@ -319,16 +317,6 @@ func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("expected both refresh callers to share a single upstream call, got %d", got)
-	}
-}
-
-func TestXAIAuthDefaultPollInterval(t *testing.T) {
-	auth := NewXAIAuth(nil)
-	if auth.minPollInterval != 0 {
-		t.Fatalf("auth.minPollInterval = %v, want 0 (defaults to %v in production)", auth.minPollInterval, defaultPollInterval)
-	}
-	if defaultPollInterval != 5*time.Second {
-		t.Fatalf("defaultPollInterval = %v, want 5s", defaultPollInterval)
 	}
 }
 

@@ -10,22 +10,15 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type homeStatusErr struct {
-	code       int
-	msg        string
-	diagnostic string
-	errorType  string
-	upstream   bool
+	code int
+	msg  string
 }
 
 func (e homeStatusErr) Error() string {
-	if e.upstream {
-		return e.msg
-	}
 	if e.msg != "" {
 		return e.msg
 	}
@@ -33,28 +26,6 @@ func (e homeStatusErr) Error() string {
 }
 
 func (e homeStatusErr) StatusCode() int { return e.code }
-
-func (e homeStatusErr) LogDiagnostic() string {
-	if strings.TrimSpace(e.diagnostic) != "" {
-		return logging.SafeDiagnosticForLog(e.diagnostic)
-	}
-	if e.upstream {
-		return fmt.Sprintf("Home refresh upstream response: status=%d", e.code)
-	}
-	if errorType := strings.ToLower(strings.TrimSpace(e.errorType)); errorType != "" {
-		return logging.SafeDiagnosticForLog("Home refresh failed: type=" + errorType)
-	}
-	return logging.SafeDiagnosticForLog(e.Error())
-}
-
-func (e homeStatusErr) DirectResponse() bool { return e.upstream }
-
-func (e homeStatusErr) ResponseBody() []byte {
-	if !e.upstream {
-		return nil
-	}
-	return []byte(e.msg)
-}
 
 type homeErrorEnvelope struct {
 	Error *homeErrorDetail `json:"error"`
@@ -66,16 +37,9 @@ type homeRefreshAuthEnvelope struct {
 }
 
 type homeErrorDetail struct {
-	Type       string                `json:"type"`
-	Message    string                `json:"message"`
-	Code       string                `json:"code,omitempty"`
-	Diagnostic string                `json:"diagnostic,omitempty"`
-	Upstream   *homeUpstreamResponse `json:"upstream,omitempty"`
-}
-
-type homeUpstreamResponse struct {
-	Status int    `json:"status"`
-	Body   []byte `json:"body"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
 }
 
 type homeRefreshClient interface {
@@ -119,11 +83,7 @@ func RefreshAuthViaHome(ctx context.Context, cfg *config.Config, auth *cliproxya
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, true, err
 		}
-		return nil, true, homeStatusErr{
-			code:       http.StatusServiceUnavailable,
-			msg:        "home refresh temporarily unavailable",
-			diagnostic: "Home refresh transport failed: " + logging.SafeErrorDiagnostic(err),
-		}
+		return nil, true, homeStatusErr{code: http.StatusServiceUnavailable, msg: "home refresh temporarily unavailable"}
 	}
 
 	var env homeErrorEnvelope
@@ -131,15 +91,6 @@ func RefreshAuthViaHome(ctx context.Context, cfg *config.Config, auth *cliproxya
 		code := strings.TrimSpace(env.Error.Type)
 		if code == "" {
 			code = strings.TrimSpace(env.Error.Code)
-		}
-		if env.Error.Upstream != nil {
-			return nil, true, homeStatusErr{
-				code:       env.Error.Upstream.Status,
-				msg:        string(env.Error.Upstream.Body),
-				diagnostic: env.Error.Diagnostic,
-				errorType:  code,
-				upstream:   true,
-			}
 		}
 		statusCode := statusFromHomeErrorCode(code)
 		message := "credential refresh temporarily unavailable"
@@ -149,16 +100,12 @@ func RefreshAuthViaHome(ctx context.Context, cfg *config.Config, auth *cliproxya
 		case http.StatusNotFound:
 			message = "credential refresh target not found"
 		}
-		return nil, true, homeStatusErr{code: statusCode, msg: message, diagnostic: env.Error.Diagnostic, errorType: code}
+		return nil, true, homeStatusErr{code: statusCode, msg: message}
 	}
 
 	updated, returnedIndex, errParse := parseHomeRefreshAuth(raw)
 	if errParse != nil {
-		return nil, true, homeStatusErr{
-			code:       http.StatusBadGateway,
-			msg:        "home returned invalid auth payload",
-			diagnostic: "Home refresh response decode failed: " + logging.SafeErrorDiagnostic(errParse),
-		}
+		return nil, true, homeStatusErr{code: http.StatusBadGateway, msg: "home returned invalid auth payload"}
 	}
 	if updated.Disabled || updated.Status == cliproxyauth.StatusDisabled {
 		return nil, true, homeStatusErr{code: http.StatusUnauthorized, msg: "credential unauthorized"}

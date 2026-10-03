@@ -467,23 +467,19 @@ func TestCodexWebsocketsExecuteStreamHandshakeErrorReturnsWithoutLockingSession(
 	}
 
 	for i := 0; i < 2; i++ {
-		attemptCtx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
 		done := make(chan error, 1)
-		go func(ctx context.Context) {
-			_, errExecute := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		go func() {
+			_, errExecute := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
 				Model:   "gpt-5.4",
 				Payload: []byte(`{"model":"gpt-5.4","input":[{"type":"message","id":"msg-1"}]}`),
 			}, opts)
 			done <- errExecute
-		}(attemptCtx)
+		}()
 		select {
 		case errExecute := <-done:
 			statusErr, ok := errExecute.(interface{ StatusCode() int })
 			if !ok || statusErr.StatusCode() != http.StatusUnauthorized {
 				t.Fatalf("attempt %d error = %T %v, want status 401", i+1, errExecute, errExecute)
-			}
-			if !cliproxyexecutor.UpstreamAttempted(attemptCtx) {
-				t.Fatalf("attempt %d websocket handshake was not marked as upstream", i+1)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("attempt %d timed out; execution session remained locked", i+1)
@@ -548,100 +544,6 @@ func TestCodexAutoExecutorRequiredUpstreamWebsocketRejectsHTTPFallback(t *testin
 	}
 }
 
-func TestCodexWebsocketUpgradeFallbackLocalErrorDoesNotMarkUpstreamAttempt(t *testing.T) {
-	tests := []struct {
-		name    string
-		execute func(*CodexWebsocketsExecutor, context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) error
-	}{
-		{
-			name: "non-stream",
-			execute: func(exec *CodexWebsocketsExecutor, ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
-				_, errExecute := exec.Execute(ctx, auth, req, opts)
-				return errExecute
-			},
-		},
-		{
-			name: "stream",
-			execute: func(exec *CodexWebsocketsExecutor, ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
-				_, errExecute := exec.ExecuteStream(ctx, auth, req, opts)
-				return errExecute
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var upgradeAttempts atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-					t.Errorf("unexpected HTTP fallback request: %s %s", r.Method, r.URL.Path)
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				upgradeAttempts.Add(1)
-				w.WriteHeader(http.StatusUpgradeRequired)
-				_, _ = w.Write([]byte(`{"error":{"message":"websocket unavailable"}}`))
-			}))
-			defer server.Close()
-
-			exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
-			auth := &cliproxyauth.Auth{
-				ID:       "codex-fallback-local-error",
-				Provider: "codex",
-				Attributes: map[string]string{
-					"api_key":  "sk-test",
-					"base_url": server.URL,
-				},
-			}
-			ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-			opts := codexOpenAIImageTestOptions(codexImagesGenerationsPath, tc.name == "stream")
-			errExecute := tc.execute(exec, ctx, auth, cliproxyexecutor.Request{
-				Model:   "gpt-5.4",
-				Payload: []byte("not-json"),
-			}, opts)
-			if errExecute == nil || !strings.Contains(errExecute.Error(), "invalid OpenAI image generation request JSON") {
-				t.Fatalf("Execute() error = %v, want local image request validation error", errExecute)
-			}
-			if got := upgradeAttempts.Load(); got != 1 {
-				t.Fatalf("websocket upgrade attempts = %d, want 1", got)
-			}
-			if cliproxyexecutor.UpstreamAttempted(ctx) {
-				t.Fatal("transparent 426 fallback marked a local HTTP preparation error as an upstream attempt")
-			}
-		})
-	}
-}
-
-func TestCodexWebsocketMissingRequiredSessionDoesNotMarkUpstreamAttempt(t *testing.T) {
-	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
-	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
-	auth := &cliproxyauth.Auth{
-		ID:       "codex-required-session",
-		Provider: "codex",
-		Attributes: map[string]string{
-			"api_key": "sk-test",
-		},
-	}
-	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(
-		cliproxyexecutor.WithRequiredUpstreamWebsocket(context.Background()),
-	)
-	_, errExecute := exec.Execute(ctx, auth, cliproxyexecutor.Request{
-		Model:   "gpt-5.4",
-		Payload: []byte(`{"model":"gpt-5.4","previous_response_id":"resp-1","input":[{"type":"message","role":"user","content":"hello"}]}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatOpenAIResponse,
-		Metadata: map[string]any{
-			cliproxyexecutor.ExecutionSessionMetadataKey: "missing-codex-session",
-		},
-	})
-	if !cliproxyexecutor.IsUpstreamWebsocketReplayRequired(errExecute) {
-		t.Fatalf("Execute() error = %T %v, want replay-required", errExecute, errExecute)
-	}
-	if cliproxyexecutor.UpstreamAttempted(ctx) {
-		t.Fatal("missing retained websocket connection was marked as an upstream attempt")
-	}
-}
-
 func TestCodexWebsocketsExecuteStreamPassesThroughUpstreamWebsocketPayloadForDownstreamWebsocket(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)
@@ -682,16 +584,11 @@ func TestCodexWebsocketsExecuteStreamPassesThroughUpstreamWebsocketPayloadForDow
 		SourceFormat:   sdktranslator.FromString("openai-response"),
 		ResponseFormat: sdktranslator.FromString("openai-response"),
 	}
-	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(
-		cliproxyexecutor.WithDownstreamWebsocket(context.Background()),
-	)
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
 
 	result, err := exec.ExecuteStream(ctx, auth, req, opts)
 	if err != nil {
 		t.Fatalf("ExecuteStream() error = %v", err)
-	}
-	if !cliproxyexecutor.UpstreamAttempted(ctx) {
-		t.Fatal("websocket write did not mark an upstream attempt")
 	}
 
 	select {
@@ -783,6 +680,76 @@ func TestCodexWebsocketsExecuteStreamPropagatesUpstreamErrorForDownstreamWebsock
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for error stream chunk")
 	}
+}
+
+func TestCodexWebsocketsExecuteStreamDownstreamWebsocketResponseIncomplete(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	incompletePayload := []byte(`{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete"}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Errorf("read first message: %v", errRead)
+			return
+		}
+		if errWrite := conn.WriteMessage(websocket.TextMessage, incompletePayload); errWrite != nil {
+			t.Errorf("write incomplete message: %v", errWrite)
+			return
+		}
+		// Keep connection open without closing or sending more messages
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "sess-incomplete-test",
+		},
+		SourceFormat:   sdktranslator.FromString("openai-response"),
+		ResponseFormat: sdktranslator.FromString("openai-response"),
+	}
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+
+	result, err := exec.ExecuteStream(ctx, auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	select {
+	case chunk, ok := <-result.Chunks:
+		if !ok {
+			t.Fatal("stream closed before response.incomplete chunk")
+		}
+		if !bytes.Contains(chunk.Payload, []byte("response.incomplete")) {
+			t.Fatalf("chunk payload = %q, want response.incomplete", chunk.Payload)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for response.incomplete stream chunk")
+	}
+
+	select {
+	case chunk, ok := <-result.Chunks:
+		if ok {
+			t.Fatalf("unexpected chunk after terminal event: %#v", chunk)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("result.Chunks not closed after response.incomplete; executor hung reading open socket")
+	}
+
+	req2Ctx, req2Cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer req2Cancel()
+	_, _ = exec.ExecuteStream(req2Ctx, auth, req, opts)
 }
 
 func TestSendTerminalWebsocketReadInvalidatesBeforeWaitingForCapacity(t *testing.T) {
@@ -2168,12 +2135,8 @@ func TestCodexWebsocketNonstreamLifecycleBindFailureDetachesConnection(t *testin
 			cliproxyexecutor.ExecutionSessionMetadataKey: "nonstream-bind-failed",
 		},
 	}
-	attemptCtx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-	if _, errExecute := exec.Execute(attemptCtx, auth, req, opts); errExecute == nil {
+	if _, errExecute := exec.Execute(context.Background(), auth, req, opts); errExecute == nil {
 		t.Fatal("Execute() error = nil, want lifecycle bind failure")
-	}
-	if cliproxyexecutor.UpstreamAttempted(attemptCtx) {
-		t.Fatal("successful handshake marked a lifecycle bind failure as an upstream request attempt")
 	}
 	select {
 	case <-closed:
@@ -2230,12 +2193,8 @@ func TestCodexWebsocketLifecycleBindFailureReleasesSessionRequestLock(t *testing
 			cliproxyexecutor.ExecutionSessionMetadataKey: "bind-failed",
 		},
 	}
-	attemptCtx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-	if _, errExecute := exec.ExecuteStream(attemptCtx, auth, req, opts); errExecute == nil {
+	if _, errExecute := exec.ExecuteStream(context.Background(), auth, req, opts); errExecute == nil {
 		t.Fatal("ExecuteStream() error = nil, want lifecycle bind failure")
-	}
-	if cliproxyexecutor.UpstreamAttempted(attemptCtx) {
-		t.Fatal("successful handshake marked a lifecycle bind failure as an upstream request attempt")
 	}
 	select {
 	case <-closed:
@@ -2448,13 +2407,9 @@ func TestCodexWebsocketsExecuteHandshakeUsageLimitReachedSetsRetryAfter(t *testi
 		ResponseFormat: sdktranslator.FromString("openai-response"),
 	}
 
-	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-	_, errExecute := exec.Execute(ctx, auth, req, opts)
+	_, errExecute := exec.Execute(context.Background(), auth, req, opts)
 	if errExecute == nil {
 		t.Fatal("Execute() error = nil, want handshake rejection")
-	}
-	if !cliproxyexecutor.UpstreamAttempted(ctx) {
-		t.Fatal("429 websocket handshake was not marked as an upstream attempt")
 	}
 	statusErr, ok := errExecute.(interface{ StatusCode() int })
 	if !ok || statusErr.StatusCode() != http.StatusTooManyRequests {
@@ -2499,13 +2454,9 @@ func TestCodexWebsocketsExecuteStreamHandshakeUsageLimitReachedSetsRetryAfter(t 
 		ResponseFormat: sdktranslator.FromString("openai-response"),
 	}
 
-	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-	_, errExecuteStream := exec.ExecuteStream(ctx, auth, req, opts)
+	_, errExecuteStream := exec.ExecuteStream(context.Background(), auth, req, opts)
 	if errExecuteStream == nil {
 		t.Fatal("ExecuteStream() error = nil, want handshake rejection")
-	}
-	if !cliproxyexecutor.UpstreamAttempted(ctx) {
-		t.Fatal("429 streaming websocket handshake was not marked as an upstream attempt")
 	}
 	statusErr, ok := errExecuteStream.(interface{ StatusCode() int })
 	if !ok || statusErr.StatusCode() != http.StatusTooManyRequests {

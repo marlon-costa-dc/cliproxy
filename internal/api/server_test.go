@@ -23,11 +23,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -42,7 +42,6 @@ type codexSearchCaptureExecutor struct {
 	statuses     []int
 	refreshCalls int
 	httpCalls    int
-	beforeReturn func()
 }
 
 func (e *codexSearchCaptureExecutor) Identifier() string { return "codex" }
@@ -140,9 +139,6 @@ func (e *codexSearchCaptureExecutor) HttpRequest(_ context.Context, selected *au
 	if e.httpCalls <= len(e.statuses) && e.statuses[e.httpCalls-1] > 0 {
 		statusCode = e.statuses[e.httpCalls-1]
 	}
-	if e.beforeReturn != nil {
-		e.beforeReturn()
-	}
 	return &http.Response{
 		StatusCode: statusCode,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -151,71 +147,26 @@ func (e *codexSearchCaptureExecutor) HttpRequest(_ context.Context, selected *au
 }
 
 type codexSearchHomeDispatcher struct {
-	authID string
 	calls  atomic.Int32
 	policy atomic.Value
-}
-
-type homeUnauthorizedUsageCapture struct {
-	authID  string
-	records chan coreusage.Record
-}
-
-func (p *homeUnauthorizedUsageCapture) HandleUsage(_ context.Context, record coreusage.Record) {
-	if p == nil || record.ExecutorType != "home-result" || record.AuthID != p.authID {
-		return
-	}
-	select {
-	case p.records <- record:
-	default:
-	}
-}
-
-func (p *homeUnauthorizedUsageCapture) wait(t *testing.T) coreusage.Record {
-	t.Helper()
-	select {
-	case record := <-p.records:
-		return record
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Home unauthorized usage record")
-		return coreusage.Record{}
-	}
-}
-
-type noopHomeUnauthorizedUsagePlugin struct{}
-
-func (noopHomeUnauthorizedUsagePlugin) HandleUsage(context.Context, coreusage.Record) {}
-
-func registerHomeUnauthorizedUsageCapture(t *testing.T, name, authID string) *homeUnauthorizedUsageCapture {
-	t.Helper()
-	capture := &homeUnauthorizedUsageCapture{authID: authID, records: make(chan coreusage.Record, 1)}
-	coreusage.RegisterNamedPlugin(name, capture)
-	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(name, noopHomeUnauthorizedUsagePlugin{})
-	})
-	return capture
 }
 
 func (*codexSearchHomeDispatcher) HeartbeatOK() bool { return true }
 
 func (d *codexSearchHomeDispatcher) RPopAuth(_ context.Context, model string, _ string, _ http.Header, _ int) ([]byte, error) {
 	d.calls.Add(1)
-	authID := d.authID
-	if authID == "" {
-		authID = "home-codex-search"
-	}
 	return json.Marshal(map[string]any{
 		"model":      model,
-		"auth_index": authID,
+		"auth_index": "home-codex-search",
 		"auth": map[string]any{
-			"id":       authID,
+			"id":       "home-codex-search",
 			"provider": "codex",
 			"status":   "active",
 			"metadata": map[string]any{"access_token": "home-search-token"},
 		},
 		"concurrency": map[string]any{
 			"accounted":     true,
-			"credential_id": authID,
+			"credential_id": "home-codex-search",
 			"model":         model,
 		},
 	})
@@ -245,24 +196,6 @@ type trackedSearchResponseBody struct {
 }
 
 func (b *trackedSearchResponseBody) Close() error {
-	b.closed.Store(true)
-	return nil
-}
-
-type errorSearchResponseBody struct {
-	payload []byte
-	read    atomic.Bool
-	closed  atomic.Bool
-}
-
-func (b *errorSearchResponseBody) Read(p []byte) (int, error) {
-	if !b.read.CompareAndSwap(false, true) {
-		return 0, io.EOF
-	}
-	return copy(p, b.payload), io.ErrUnexpectedEOF
-}
-
-func (b *errorSearchResponseBody) Close() error {
 	b.closed.Store(true)
 	return nil
 }
@@ -392,137 +325,30 @@ func TestAuditHomeCodexSearchBodyCloseBeforeRelease(t *testing.T) {
 	}
 }
 
-func TestHomeCodexAlphaSearchForwardsUnauthorizedResponseWithoutRefresh(t *testing.T) {
-	const upstreamError = `{"error":{"message":"access token expired"}}`
+func TestHomeCodexAlphaSearchRefreshesUnauthorizedSelectionOnce(t *testing.T) {
 	server := newTestServer(t)
-	server.cfg.RequestLog = true
 	dispatcher := &codexSearchHomeDispatcher{}
 	server.handlers.AuthManager.SetConfig(&proxyconfig.Config{Home: proxyconfig.HomeConfig{Enabled: true}})
 	server.handlers.AuthManager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
-	executor := &codexSearchCaptureExecutor{
-		statuses:     []int{http.StatusUnauthorized},
-		responseBody: io.NopCloser(strings.NewReader(upstreamError)),
-	}
+	executor := &codexSearchCaptureExecutor{statuses: []int{http.StatusUnauthorized, http.StatusOK}}
 	server.handlers.AuthManager.RegisterExecutor(executor)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"id":"home-search-refresh","model":"gpt-5-codex","query":"test"}`))
 	req.Header.Set("Authorization", "Bearer test-key")
 	rr := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rr)
-	c.Request = req
-	server.codexAlphaSearch(c)
+	server.engine.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
-	if got := rr.Body.String(); got != upstreamError {
-		t.Fatalf("body = %q, want original upstream error %q", got, upstreamError)
+	if executor.refreshCalls != 1 || executor.httpCalls != 2 {
+		t.Fatalf("refresh/http calls = %d/%d, want 1/2", executor.refreshCalls, executor.httpCalls)
 	}
-	if executor.refreshCalls != 0 || executor.httpCalls != 1 {
-		t.Fatalf("refresh/http calls = %d/%d, want 0/1", executor.refreshCalls, executor.httpCalls)
-	}
-	if got := executor.request.Header.Get("Authorization"); got != "Bearer home-search-token" {
-		t.Fatalf("Authorization = %q, want original Home token", got)
+	if got := executor.request.Header.Get("Authorization"); got != "Bearer refreshed-home-search-token" {
+		t.Fatalf("retry Authorization = %q, want refreshed token", got)
 	}
 	if got := dispatcher.calls.Load(); got != 1 {
 		t.Fatalf("Home RPOP calls = %d, want 1", got)
-	}
-	rawAPIResponse, okResponse := c.Get("API_RESPONSE")
-	if !okResponse {
-		t.Fatal("API_RESPONSE was not captured")
-	}
-	apiResponse, _ := rawAPIResponse.([]byte)
-	if !strings.Contains(string(apiResponse), "Status: 401") || !strings.Contains(string(apiResponse), upstreamError) {
-		t.Fatalf("API_RESPONSE = %q, want original upstream 401", apiResponse)
-	}
-}
-
-func TestHomeCodexAlphaSearchReportsUnauthorizedBeforeEarlyReturn(t *testing.T) {
-	const upstreamError = `{"error":{"message":"access token expired"}}`
-	tests := []struct {
-		name         string
-		responseBody func() io.ReadCloser
-		beforeReturn func(*executionregistry.Registry)
-		wantStatus   int
-		wantFailBody string
-	}{
-		{
-			name: "response bind failure",
-			responseBody: func() io.ReadCloser {
-				return &trackedSearchResponseBody{Reader: strings.NewReader(upstreamError)}
-			},
-			beforeReturn: func(registry *executionregistry.Registry) {
-				_ = registry.Close()
-			},
-			wantStatus:   http.StatusServiceUnavailable,
-			wantFailBody: "upstream unauthorized",
-		},
-		{
-			name: "response read failure",
-			responseBody: func() io.ReadCloser {
-				return &errorSearchResponseBody{payload: []byte(upstreamError)}
-			},
-			wantStatus:   http.StatusBadGateway,
-			wantFailBody: upstreamError,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			server := newTestServer(t)
-			registry := executionregistry.New()
-			server.handlers.AuthManager.SetConfig(&proxyconfig.Config{Home: proxyconfig.HomeConfig{Enabled: true}})
-			testAuthID := "home-codex-search-" + strings.ReplaceAll(test.name, " ", "-")
-			server.handlers.AuthManager.PublishHomeDispatch(&codexSearchHomeDispatcher{authID: testAuthID}, registry, 1)
-			executor := &codexSearchCaptureExecutor{
-				statuses:     []int{http.StatusUnauthorized},
-				responseBody: test.responseBody(),
-			}
-			if test.beforeReturn != nil {
-				executor.beforeReturn = func() { test.beforeReturn(registry) }
-			}
-			server.handlers.AuthManager.RegisterExecutor(executor)
-			usageCapture := registerHomeUnauthorizedUsageCapture(t, t.Name(), testAuthID)
-
-			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"model":"gpt-5-codex","query":"test"}`))
-			request.Header.Set("Authorization", "Bearer test-key")
-			server.engine.ServeHTTP(recorder, request)
-
-			if recorder.Code != test.wantStatus {
-				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.wantStatus, recorder.Body.String())
-			}
-			record := usageCapture.wait(t)
-			if record.Fail.StatusCode != http.StatusUnauthorized || record.Fail.Body != test.wantFailBody {
-				t.Fatalf("Home unauthorized failure = status %d body %q, want status 401 body %q", record.Fail.StatusCode, record.Fail.Body, test.wantFailBody)
-			}
-		})
-	}
-}
-
-func TestHomeCodexAlphaSearchRequestLogPreservesBodyReturnedWithReadError(t *testing.T) {
-	const upstreamError = `{"error":{"message":"access token expired"}}`
-	server := newTestServer(t)
-	server.cfg.RequestLog = true
-	server.handlers.AuthManager.SetConfig(&proxyconfig.Config{Home: proxyconfig.HomeConfig{Enabled: true}})
-	server.handlers.AuthManager.PublishHomeDispatch(&codexSearchHomeDispatcher{}, executionregistry.New(), 1)
-	server.handlers.AuthManager.RegisterExecutor(&codexSearchCaptureExecutor{
-		statuses:     []int{http.StatusUnauthorized},
-		responseBody: &errorSearchResponseBody{payload: []byte(upstreamError)},
-	})
-
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"model":"gpt-5-codex","query":"test"}`))
-	server.codexAlphaSearch(c)
-
-	if recorder.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadGateway, recorder.Body.String())
-	}
-	rawAPIResponse, okResponse := c.Get("API_RESPONSE")
-	apiResponse, _ := rawAPIResponse.([]byte)
-	if !okResponse || !strings.Contains(string(apiResponse), upstreamError) || !strings.Contains(string(apiResponse), io.ErrUnexpectedEOF.Error()) {
-		t.Fatalf("API_RESPONSE = %q, want upstream body and read error", apiResponse)
 	}
 }
 
@@ -1527,7 +1353,7 @@ func TestNewServerWithoutPluginHostLeavesHandlerInterceptorsDisabled(t *testing.
 	}
 }
 
-func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
+func TestManagementUsageEndpointsRequireManagementAuthAndServePlusContracts(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
 	prevQueueEnabled := redisqueue.Enabled()
@@ -1538,6 +1364,7 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	})
 
 	server := newTestServer(t)
+	server.mgmt.SetUsageStatistics(internalusage.NewRequestStatistics())
 
 	redisqueue.Enqueue([]byte(`{"id":1}`))
 	redisqueue.Enqueue([]byte(`{"id":2}`))
@@ -1553,8 +1380,21 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	legacyReq.Header.Set("Authorization", "Bearer test-management-key")
 	legacyRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(legacyRR, legacyReq)
-	if legacyRR.Code != http.StatusNotFound {
-		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusNotFound, legacyRR.Body.String())
+	if legacyRR.Code != http.StatusOK {
+		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusOK, legacyRR.Body.String())
+	}
+
+	var usagePayload struct {
+		Usage struct {
+			TotalRequests int64 `json:"total_requests"`
+		} `json:"usage"`
+		FailedRequests int64 `json:"failed_requests"`
+	}
+	if errUnmarshal := json.Unmarshal(legacyRR.Body.Bytes(), &usagePayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal legacy usage response: %v body=%s", errUnmarshal, legacyRR.Body.String())
+	}
+	if usagePayload.Usage.TotalRequests != 0 || usagePayload.FailedRequests != 0 {
+		t.Fatalf("legacy usage payload = %+v, want zeroed statistics", usagePayload)
 	}
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
@@ -1586,6 +1426,38 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 
 	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
 		t.Fatalf("remaining queue = %q, want empty", remaining)
+	}
+}
+
+func TestCorsMiddlewareSkipsManagementRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(corsMiddleware())
+	router.OPTIONS("/v0/management/config", func(c *gin.Context) {
+		c.Status(http.StatusUnauthorized)
+	})
+	router.OPTIONS("/v1/models", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	managementReq := httptest.NewRequest(http.MethodOptions, "/v0/management/config", nil)
+	managementRR := httptest.NewRecorder()
+	router.ServeHTTP(managementRR, managementReq)
+	if managementRR.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("management CORS origin = %q, want empty", managementRR.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if managementRR.Code != http.StatusUnauthorized {
+		t.Fatalf("management status = %d, want %d", managementRR.Code, http.StatusUnauthorized)
+	}
+
+	apiReq := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+	apiRR := httptest.NewRecorder()
+	router.ServeHTTP(apiRR, apiReq)
+	if apiRR.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("api CORS origin = %q, want *", apiRR.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if apiRR.Code != http.StatusNoContent {
+		t.Fatalf("api status = %d, want %d", apiRR.Code, http.StatusNoContent)
 	}
 }
 
@@ -1645,6 +1517,85 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	server.engine.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestManagementAmpRoutesRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	routes := make(map[string]struct{})
+	for _, route := range server.engine.Routes() {
+		routes[route.Method+" "+route.Path] = struct{}{}
+	}
+
+	expected := []string{
+		"GET /v0/management/ampcode",
+		"GET /v0/management/ampcode/upstream-url",
+		"PUT /v0/management/ampcode/upstream-url",
+		"PATCH /v0/management/ampcode/upstream-url",
+		"DELETE /v0/management/ampcode/upstream-url",
+		"GET /v0/management/ampcode/upstream-api-key",
+		"PUT /v0/management/ampcode/upstream-api-key",
+		"PATCH /v0/management/ampcode/upstream-api-key",
+		"DELETE /v0/management/ampcode/upstream-api-key",
+		"GET /v0/management/ampcode/restrict-management-to-localhost",
+		"PUT /v0/management/ampcode/restrict-management-to-localhost",
+		"PATCH /v0/management/ampcode/restrict-management-to-localhost",
+		"GET /v0/management/ampcode/model-mappings",
+		"PUT /v0/management/ampcode/model-mappings",
+		"PATCH /v0/management/ampcode/model-mappings",
+		"DELETE /v0/management/ampcode/model-mappings",
+		"GET /v0/management/ampcode/force-model-mappings",
+		"PUT /v0/management/ampcode/force-model-mappings",
+		"PATCH /v0/management/ampcode/force-model-mappings",
+		"GET /v0/management/ampcode/upstream-api-keys",
+		"PUT /v0/management/ampcode/upstream-api-keys",
+		"PATCH /v0/management/ampcode/upstream-api-keys",
+		"DELETE /v0/management/ampcode/upstream-api-keys",
+		"GET /v0/management/opencode-go-api-key",
+		"PUT /v0/management/opencode-go-api-key",
+		"PATCH /v0/management/opencode-go-api-key",
+		"DELETE /v0/management/opencode-go-api-key",
+		"GET /v0/management/poolside-api-key",
+		"PUT /v0/management/poolside-api-key",
+		"PATCH /v0/management/poolside-api-key",
+		"DELETE /v0/management/poolside-api-key",
+	}
+	for _, route := range expected {
+		if _, ok := routes[route]; !ok {
+			t.Errorf("missing management route %s", route)
+		}
+	}
+}
+
+func TestPlusServerModulesCallbacksAndCompatibilityRoutesRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	routes := make(map[string]struct{})
+	for _, route := range server.engine.Routes() {
+		routes[route.Method+" "+route.Path] = struct{}{}
+	}
+
+	expected := []string{
+		"POST /api/internal",
+		"GET /auth/*path",
+		"POST /api/provider/:provider/v1/messages",
+		"GET /v0/oauth/kiro",
+		"GET /v0/oauth/kiro/start",
+		"POST /v0/oauth/kiro/import",
+		"GET /gitlab/callback",
+		"GET /google/callback",
+		"GET /kiro/callback",
+		"GET /iflow/callback",
+		"POST /api/event_logging/batch",
+		"GET /v0/management/copilot-quota",
+	}
+	for _, route := range expected {
+		if _, ok := routes[route]; !ok {
+			t.Errorf("missing Plus compatibility route %s", route)
+		}
 	}
 }
 

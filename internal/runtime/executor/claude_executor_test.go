@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -4589,6 +4590,138 @@ func TestApplyCloaking_PreservesConfiguredStrictModeAndSensitiveWordsWhenModeOmi
 	}
 }
 
+func TestGetCloakConfigFromAuth(t *testing.T) {
+	tests := []struct {
+		name       string
+		auth       *cliproxyauth.Auth
+		wantMode   string
+		wantStrict bool
+		wantWords  []string
+		wantCache  bool
+	}{
+		{
+			name: "metadata fallback parses cloak settings",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{
+				"cloak_mode":            "  always ",
+				"cloak_strict_mode":     "TrUe",
+				"cloak_sensitive_words": " alpha, beta ",
+				"cloak_cache_user_id":   "TRUE",
+			}},
+			wantMode:   "always",
+			wantStrict: true,
+			wantWords:  []string{"alpha", "beta"},
+			wantCache:  true,
+		},
+		{
+			name: "nonblank attributes take precedence over metadata",
+			auth: &cliproxyauth.Auth{
+				Attributes: map[string]string{
+					"cloak_mode":            "  never ",
+					"cloak_strict_mode":     "false",
+					"cloak_sensitive_words": "attribute-one, attribute-two",
+					"cloak_cache_user_id":   "true",
+				},
+				Metadata: map[string]any{
+					"cloak_mode":            "always",
+					"cloak_strict_mode":     "true",
+					"cloak_sensitive_words": "metadata-one, metadata-two",
+					"cloak_cache_user_id":   "false",
+				},
+			},
+			wantMode:  "never",
+			wantWords: []string{"attribute-one", "attribute-two"},
+			wantCache: true,
+		},
+		{
+			name: "blank attributes fall back to metadata",
+			auth: &cliproxyauth.Auth{
+				Attributes: map[string]string{
+					"cloak_mode":            " \t ",
+					"cloak_strict_mode":     "",
+					"cloak_sensitive_words": "  ",
+					"cloak_cache_user_id":   "\n",
+				},
+				Metadata: map[string]any{
+					"cloak_mode":            "always",
+					"cloak_strict_mode":     "true",
+					"cloak_sensitive_words": "metadata-one, metadata-two",
+					"cloak_cache_user_id":   "true",
+				},
+			},
+			wantMode:   "always",
+			wantStrict: true,
+			wantWords:  []string{"metadata-one", "metadata-two"},
+			wantCache:  true,
+		},
+		{
+			name: "nonstring and nil metadata are ignored",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{
+				"cloak_mode":            1,
+				"cloak_strict_mode":     true,
+				"cloak_sensitive_words": []string{"not-a-string"},
+				"cloak_cache_user_id":   nil,
+			}},
+		},
+		{
+			name: "nil auth keeps empty credential override",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotMode, gotStrict, gotWords, gotCache := getCloakConfigFromAuth(tt.auth)
+			if gotMode != tt.wantMode || gotStrict != tt.wantStrict || gotCache != tt.wantCache {
+				t.Fatalf("getCloakConfigFromAuth() = (%q, %t, ..., %t), want (%q, %t, ..., %t)", gotMode, gotStrict, gotCache, tt.wantMode, tt.wantStrict, tt.wantCache)
+			}
+			if !reflect.DeepEqual(gotWords, tt.wantWords) {
+				t.Fatal("getCloakConfigFromAuth() sensitive words do not match")
+			}
+		})
+	}
+}
+
+func TestApplyCloaking_EmptyCredentialModeRespectsDefaultAndGlobalPrecedence(t *testing.T) {
+	payload := []byte(`{"system":"original system","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	tests := []struct {
+		name        string
+		cfg         *config.Config
+		auth        *cliproxyauth.Auth
+		wantCloaked bool
+	}{
+		{
+			name:        "default mode preserves the caller without cloaking (v7.2.136 upstream sync)",
+			cfg:         &config.Config{},
+			wantCloaked: false,
+		},
+		{
+			name:        "global disable mode overrides an empty credential mode",
+			cfg:         &config.Config{DisableClaudeCloakMode: true},
+			wantCloaked: false,
+		},
+		{
+			name:        "credential auto mode still applies cloaking",
+			cfg:         &config.Config{},
+			auth:        &cliproxyauth.Auth{Attributes: map[string]string{"cloak_mode": "auto"}},
+			wantCloaked: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, gotCloaked, errCloaking := applyCloaking(context.Background(), tt.cfg, tt.auth, payload, "test-key", false, false)
+			if errCloaking != nil {
+				t.Fatalf("applyCloaking() error = %v", errCloaking)
+			}
+			if gotCloaked != tt.wantCloaked {
+				t.Fatalf("applyCloaking() cloaked = %t, want %t", gotCloaked, tt.wantCloaked)
+			}
+			if payloadChanged := !bytes.Equal(got, payload); payloadChanged != tt.wantCloaked {
+				t.Fatalf("applyCloaking() payload changed = %t, want %t", payloadChanged, tt.wantCloaked)
+			}
+		})
+	}
+}
+
 func TestNormalizeClaudeSamplingForUpstream_RemovesTemperature(t *testing.T) {
 	payload := []byte(`{"temperature":0,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}`)
 	out := normalizeClaudeSamplingForUpstream(payload, false)
@@ -5595,17 +5728,6 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			name: "blank display value keeps redact-thinking",
 			body: `{"model":"claude-opus-4-6","thinking":{"type":"adaptive","display":"  "}}`,
 			want: constants + ",effort-2025-11-24",
-		},
-		{
-			name:      "advisor tool beta requested placed before advanced-tool-use",
-			body:      `{"model":"claude-opus-5","tools":[{"name":"Read"}]}`,
-			requested: map[string]bool{"advisor-tool-2026-03-01": true},
-			want:      constants + ",mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name: "body with advisor server tool automatically adds advisor-tool beta",
-			body: `{"model":"claude-opus-5","tools":[{"type":"advisor_20260301","name":"advisor"}]}`,
-			want: constants + ",mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24",
 		},
 	}
 

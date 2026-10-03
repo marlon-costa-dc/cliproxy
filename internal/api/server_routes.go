@@ -139,6 +139,10 @@ func (s *Server) setupRoutes() {
 		})
 	})
 
+	s.engine.POST("/api/event_logging/batch", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
 	// OAuth callback endpoints (reuse main server port)
 	// These endpoints receive provider redirects and persist
 	// the short-lived code/state for the waiting goroutine.
@@ -183,6 +187,26 @@ func (s *Server) setupRoutes() {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
+
+	registerOAuthCallback := func(path, provider string) {
+		s.engine.GET(path, func(c *gin.Context) {
+			code := c.Query("code")
+			state := c.Query("state")
+			errStr := c.Query("error")
+			if errStr == "" {
+				errStr = c.Query("error_description")
+			}
+			if state != "" {
+				_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, provider, state, code, errStr)
+			}
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusOK, oauthCallbackSuccessHTML)
+		})
+	}
+	registerOAuthCallback("/gitlab/callback", "gitlab")
+	registerOAuthCallback("/google/callback", "gemini")
+	registerOAuthCallback("/kiro/callback", "kiro")
+	registerOAuthCallback("/iflow/callback", "iflow")
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
@@ -457,6 +481,42 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": err.Error()})
 		return
 	}
+	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
+		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
+		helps.RecordAPIResponseMetadata(ctx, s.cfg, resp.StatusCode, resp.Header.Clone())
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("codex alpha search: close unauthorized response body error: %v", errClose)
+		}
+		refreshed, didRefresh, errRefresh := s.handlers.AuthManager.RefreshHomeSelectionAfterUnauthorized(ctx, selection, selected)
+		if errRefresh != nil {
+			selection.End("refresh_failed")
+			c.JSON(clienterror.HTTPStatusFromErrorOr(errRefresh, http.StatusServiceUnavailable), gin.H{"error": errRefresh.Error()})
+			return
+		}
+		if !didRefresh || refreshed == nil {
+			selection.End("refresh_unavailable")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Codex credential unauthorized"})
+			return
+		}
+		selected = refreshed
+		logging.SetGinCPATraceID(c, selected.EnsureIndex())
+		resp, err = performRequest(selected)
+		if err != nil {
+			if errors.Is(err, errMissingBaseURL) {
+				selection.End("missing_base_url")
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+				return
+			}
+			selection.End("retry_failed")
+			helps.RecordAPIResponseError(ctx, s.cfg, err)
+			c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": err.Error()})
+			return
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
+		}
+	}
 	closeResponseBody := func() error {
 		errClose := resp.Body.Close()
 		if errClose != nil {
@@ -466,9 +526,6 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 	if selection != nil {
 		if errBind := selection.Bind(closeResponseBody); errBind != nil {
-			if resp.StatusCode == http.StatusUnauthorized {
-				s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
-			}
 			selection.End("response_bind_failed")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": errBind.Error()})
 			return
@@ -480,19 +537,11 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	helps.RecordAPIResponseMetadata(ctx, s.cfg, resp.StatusCode, resp.Header.Clone())
 	upstreamBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		helps.AppendAPIResponseChunk(ctx, s.cfg, upstreamBody)
-		if selection != nil && resp.StatusCode == http.StatusUnauthorized {
-			s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, upstreamBody)
-		}
 		helps.RecordAPIResponseError(ctx, s.cfg, err)
 		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": "Failed to read Codex search response"})
 		return
 	}
 	helps.AppendAPIResponseChunk(ctx, s.cfg, upstreamBody)
-	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
-		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, upstreamBody)
-		log.WithField("status", resp.StatusCode).Warnf("codex alpha search upstream request failed: %s", logging.SafeDiagnosticForLog(string(upstreamBody)))
-	}
 	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
 		c.Header("Content-Type", contentType)
 	}

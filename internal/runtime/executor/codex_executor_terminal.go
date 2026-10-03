@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -426,11 +425,6 @@ func isCodexHandshakeMetadataEvent(eventType string) bool {
 	default:
 		return false
 	}
-}
-
-// observeCodexTokenEvent inspects a stream payload and marks TTFT on the first substantive token event.
-func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
-	helps.ObserveResponsesTokenEvent(reporter, payload)
 }
 
 // newCodexBootstrapOverloadErr reports a buffered overload rejection with its real status.

@@ -176,24 +176,84 @@ func TestNewAntigravityHTTPClientKeepsForeignRoundTripper(t *testing.T) {
 // the pool limit: with Go's default of 2 idle connections per host, repeated waves of
 // concurrent requests on one credential keep re-handshaking.
 func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
-	var mu sync.Mutex
-	remotes := map[string]struct{}{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		remotes[r.RemoteAddr] = struct{}{}
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	auth := antigravityAuthWithIDAndProxy("concurrent-reuse", "")
-	client := &http.Client{Transport: antigravityHTTP11Transport(auth, http.DefaultTransport.(*http.Transport))}
-
 	const (
 		waves      = 3
 		perWave    = 8
 		totalConns = waves * perWave
 	)
+	distinct, requests, err := runAntigravityPoolWaves(t.Context(), waves, perWave, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != totalConns {
+		t.Fatalf("completed %d requests, want %d", requests, totalConns)
+	}
+	// Every wave occupies perWave connections; subsequent waves must reuse them.
+	if distinct != perWave {
+		t.Fatalf("%d waves of %d concurrent requests opened %d connections, want %d (unpooled worst case is %d)",
+			waves, perWave, distinct, perWave, totalConns)
+	}
+}
+
+func TestAntigravityPoolWaveFailureCancelsWorkersAndServer(t *testing.T) {
+	// This deadline detects a stuck fixture; it is not the path that releases it.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	const perWave = 8
+	distinct, requests, err := runAntigravityPoolWaves(ctx, 3, perWave, true)
+	if ctx.Err() != nil {
+		t.Fatalf("fixture required its deadline to release workers/server: %v", ctx.Err())
+	}
+	if err == nil || !strings.Contains(err.Error(), "http://[invalid") {
+		t.Fatalf("error = %v, want the original pre-barrier request construction failure", err)
+	}
+	if requests != perWave-1 || distinct != perWave-1 {
+		t.Fatalf("requests=%d connections=%d, want %d blocked first-wave handlers", requests, distinct, perWave-1)
+	}
+	// Returning proves the helper joined every worker and closed its real server.
+}
+
+func runAntigravityPoolWaves(parent context.Context, waves, perWave int, failBeforeBarrier bool) (int, int, error) {
+	ctx, cancel := context.WithCancelCause(parent)
+	var mu sync.Mutex
+	remotes := map[string]struct{}{}
+	firstWaveWaiting := make(chan struct{})
+	var waveReady chan struct{}
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remotes[r.RemoteAddr] = struct{}{}
+		if requests%perWave == 0 {
+			waveReady = make(chan struct{})
+		}
+		requests++
+		if requests == perWave-1 {
+			close(firstWaveWaiting)
+		}
+		ready := waveReady
+		if requests%perWave == 0 {
+			close(ready)
+		}
+		mu.Unlock()
+		// Each wave must occupy its full pool, or idle-pool retention is untested.
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return
+		case <-r.Context().Done():
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	auth := antigravityAuthWithIDAndProxy("concurrent-reuse", "")
+	client := &http.Client{Transport: antigravityHTTP11Transport(auth, http.DefaultTransport.(*http.Transport))}
+	defer func() {
+		cancel(nil)
+		client.CloseIdleConnections()
+		srv.Close()
+	}()
+
 	for wave := 0; wave < waves; wave++ {
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -201,34 +261,50 @@ func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
 		for i := 0; i < perWave; i++ {
 			go func() {
 				defer wg.Done()
-				<-start
-				resp, errDo := client.Get(srv.URL)
+				select {
+				case <-start:
+				case <-ctx.Done():
+					return
+				}
+				target := srv.URL
+				if failBeforeBarrier && wave == 0 && i == perWave-1 {
+					select {
+					case <-firstWaveWaiting:
+					case <-ctx.Done():
+						return
+					}
+					target = "http://[invalid"
+				}
+				req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+				if errRequest != nil {
+					cancel(errRequest)
+					return
+				}
+				resp, errDo := client.Do(req)
 				if errDo != nil {
-					t.Error(errDo)
+					cancel(errDo)
 					return
 				}
 				if _, errDrain := io.Copy(io.Discard, resp.Body); errDrain != nil {
-					t.Error(errDrain)
+					cancel(errDrain)
 				}
 				if errClose := resp.Body.Close(); errClose != nil {
-					t.Error(errClose)
+					cancel(errClose)
 				}
 			}()
 		}
 		close(start)
 		wg.Wait()
+		if ctx.Err() != nil {
+			break
+		}
 	}
 
 	mu.Lock()
 	distinct := len(remotes)
+	arrivals := requests
 	mu.Unlock()
-	// The first wave legitimately opens perWave connections. Later waves must reuse
-	// them; with MaxIdleConnsPerHost=2 only two survive each wave and distinct grows
-	// towards totalConns instead.
-	if distinct > perWave {
-		t.Fatalf("%d waves of %d concurrent requests opened %d connections, want at most %d (unpooled worst case is %d)",
-			waves, perWave, distinct, perWave, totalConns)
-	}
+	return distinct, arrivals, context.Cause(ctx)
 }
 
 func TestNewAntigravityHTTPClientDistinctProxiesUseDistinctPools(t *testing.T) {

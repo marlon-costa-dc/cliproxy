@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -26,7 +25,6 @@ type openAICompatPoolExecutor struct {
 	executeErrors     map[string]error
 	countErrors       map[string]error
 	streamFirstErrors map[string]error
-	streamAttempts    map[string]bool
 	streamPayloads    map[string][]cliproxyexecutor.StreamChunk
 }
 
@@ -51,18 +49,15 @@ func (e *openAICompatPoolExecutor) Execute(ctx context.Context, auth *Auth, req 
 }
 
 func (e *openAICompatPoolExecutor) ExecuteStream(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	_ = ctx
 	_ = auth
 	_ = opts
 	e.mu.Lock()
 	e.streamModels = append(e.streamModels, req.Model)
 	err := e.streamFirstErrors[req.Model]
-	attempted := e.streamAttempts[req.Model]
 	payloadChunks, hasCustomChunks := e.streamPayloads[req.Model]
 	chunks := append([]cliproxyexecutor.StreamChunk(nil), payloadChunks...)
 	e.mu.Unlock()
-	if attempted {
-		cliproxyexecutor.MarkUpstreamAttempt(ctx)
-	}
 	ch := make(chan cliproxyexecutor.StreamChunk, max(1, len(chunks)))
 	if err != nil {
 		ch <- cliproxyexecutor.StreamChunk{Err: err}
@@ -788,7 +783,7 @@ func TestManagerExecute_OpenAICompatAliasPoolBlockedAuthDoesNotConsumeRetryBudge
 		Message:    "invalid_request_error: The requested model is not supported.",
 	}
 	for _, upstreamModel := range []string{"deepseek-v3.1", "glm-5"} {
-		m.MarkResult(context.Background(), Result{
+		mustMarkResult(t, m, context.Background(), Result{
 			AuthID:   badAuth.ID,
 			Provider: openAICompatPoolProviderKey,
 			Model:    upstreamModel,
@@ -838,38 +833,5 @@ func TestManagerExecuteStream_OpenAICompatAliasPoolStopsOnInvalidBootstrap(t *te
 	}
 	if got := executor.StreamModels(); len(got) != 1 || got[0] != "deepseek-v3.1" {
 		t.Fatalf("stream calls = %v, want only first upstream model", got)
-	}
-}
-
-func TestManagerExecuteStream_OpenAICompatAliasPoolPreservesEarlierUpstreamError(t *testing.T) {
-	alias := "claude-opus-4.66"
-	upstreamErr := &Error{HTTPStatus: http.StatusBadGateway, Message: "first model upstream failed"}
-	internalErr := errors.New("second model failed before upstream")
-	executor := &openAICompatPoolExecutor{
-		id: openAICompatPoolProviderKey,
-		streamFirstErrors: map[string]error{
-			"deepseek-v3.1": upstreamErr,
-			"glm-5":         internalErr,
-		},
-		streamAttempts: map[string]bool{"deepseek-v3.1": true},
-	}
-	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
-		{Name: "deepseek-v3.1", Alias: alias},
-		{Name: "glm-5", Alias: alias},
-	}, executor)
-
-	result, errExecute := m.ExecuteStream(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
-	if result == nil || errExecute != nil {
-		t.Fatalf("ExecuteStream() = (%#v, %v), want an error stream", result, errExecute)
-	}
-	chunk, ok := <-result.Chunks
-	if !ok || !errors.Is(chunk.Err, upstreamErr) {
-		t.Fatalf("stream error = %v, want earlier upstream error %v", chunk.Err, upstreamErr)
-	}
-	if errors.Is(chunk.Err, internalErr) {
-		t.Fatalf("stream error = %v, later internal error replaced upstream error", chunk.Err)
-	}
-	if hasUpstreamExecutionAttempt(chunk.Err) {
-		t.Fatalf("stream error leaked internal upstream-attempt marker: %T/%v", chunk.Err, chunk.Err)
 	}
 }

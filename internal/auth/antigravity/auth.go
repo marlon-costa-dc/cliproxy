@@ -30,26 +30,6 @@ type userInfo struct {
 	Email string `json:"email"`
 }
 
-// HTTPStatusError represents an HTTP error response with status code.
-type HTTPStatusError struct {
-	StatusCodeValue int
-	Message         string
-}
-
-func (e *HTTPStatusError) Error() string {
-	if e == nil {
-		return ""
-	}
-	return e.Message
-}
-
-func (e *HTTPStatusError) StatusCode() int {
-	if e == nil {
-		return 0
-	}
-	return e.StatusCodeValue
-}
-
 // AntigravityAuth handles Antigravity OAuth authentication
 type AntigravityAuth struct {
 	httpClient *http.Client
@@ -145,7 +125,7 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string) string {
 	}
 	params := url.Values{}
 	params.Set("access_type", "offline")
-	params.Set("client_id", ClientID)
+	params.Set("client_id", OAuthClientID())
 	params.Set("prompt", "consent")
 	params.Set("redirect_uri", redirectURI)
 	params.Set("response_type", "code")
@@ -158,8 +138,8 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string) string {
 func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redirectURI string) (*TokenResponse, error) {
 	data := url.Values{}
 	data.Set("code", code)
-	data.Set("client_id", ClientID)
-	data.Set("client_secret", ClientSecret)
+	data.Set("client_id", OAuthClientID())
+	data.Set("client_secret", OAuthClientSecret())
 	data.Set("redirect_uri", redirectURI)
 	data.Set("grant_type", "authorization_code")
 
@@ -185,11 +165,10 @@ func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redir
 			return nil, fmt.Errorf("antigravity token exchange: read response: %w", errRead)
 		}
 		body := strings.TrimSpace(string(bodyBytes))
-		msg := fmt.Sprintf("antigravity token exchange: request failed: status %d", resp.StatusCode)
-		if body != "" {
-			msg = fmt.Sprintf("antigravity token exchange: request failed: status %d: %s", resp.StatusCode, body)
+		if body == "" {
+			return nil, fmt.Errorf("antigravity token exchange: request failed: status %d", resp.StatusCode)
 		}
-		return nil, &HTTPStatusError{StatusCodeValue: resp.StatusCode, Message: msg}
+		return nil, fmt.Errorf("antigravity token exchange: request failed: status %d: %s", resp.StatusCode, body)
 	}
 
 	var token TokenResponse
@@ -228,11 +207,10 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 			return "", fmt.Errorf("antigravity userinfo: read response: %w", errRead)
 		}
 		body := strings.TrimSpace(string(bodyBytes))
-		msg := fmt.Sprintf("antigravity userinfo: request failed: status %d", resp.StatusCode)
-		if body != "" {
-			msg = fmt.Sprintf("antigravity userinfo: request failed: status %d: %s", resp.StatusCode, body)
+		if body == "" {
+			return "", fmt.Errorf("antigravity userinfo: request failed: status %d", resp.StatusCode)
 		}
-		return "", &HTTPStatusError{StatusCodeValue: resp.StatusCode, Message: msg}
+		return "", fmt.Errorf("antigravity userinfo: request failed: status %d: %s", resp.StatusCode, body)
 	}
 	var info userInfo
 	if errDecode := json.NewDecoder(resp.Body).Decode(&info); errDecode != nil {
@@ -283,10 +261,7 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", &HTTPStatusError{
-			StatusCodeValue: resp.StatusCode,
-			Message:         fmt.Sprintf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes))),
-		}
+		return "", fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var loadResp map[string]any
@@ -396,10 +371,7 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 		if len(responseErr) > 200 {
 			responseErr = responseErr[:200]
 		}
-		return "", &HTTPStatusError{
-			StatusCodeValue: resp.StatusCode,
-			Message:         fmt.Sprintf("http %d: %s", resp.StatusCode, responseErr),
-		}
+		return "", fmt.Errorf("http %d: %s", resp.StatusCode, responseErr)
 	}
 
 	return "", fmt.Errorf("onboard user did not complete after %d attempts", maxAttempts)

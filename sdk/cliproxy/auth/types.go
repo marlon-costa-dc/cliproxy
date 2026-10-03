@@ -47,14 +47,18 @@ func GetRequestInfo(ctx context.Context) *RequestInfo {
 type Auth struct {
 	// ID uniquely identifies the auth record across restarts.
 	ID string `json:"id"`
-	// RegistrationEpoch tracks monotonic registration cycles across unregister/re-register.
-	RegistrationEpoch uint64 `json:"registration_epoch,omitempty"`
-	// Generation tracks monotonic mutations to resolve scheduler/reconcile snapshot races.
-	Generation uint64 `json:"generation,omitempty"`
 	// Index is a stable runtime identifier derived from auth metadata (not persisted).
 	Index string `json:"-"`
 	// Provider is the upstream provider key (e.g. "gemini", "claude").
 	Provider string `json:"provider"`
+	// RouteChannel is the exact routing identity declared by configuration.
+	// It is distinct from display/provider-family names and is never inferred.
+	RouteChannel string `json:"-"`
+	// QuotaDomain is the explicit quota pool for this exact credential.
+	QuotaDomain string `json:"-"`
+	// OpenAICompatibilityIndex is the typed reference to the provider config
+	// entry that produced this auth. It replaces map/string index lookups.
+	OpenAICompatibilityIndex *int `json:"-"`
 	// Prefix optionally namespaces models for routing (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `json:"prefix,omitempty"`
 	// FileName stores the relative or absolute path of the backing auth file.
@@ -289,6 +293,10 @@ func (a *Auth) Clone() *Auth {
 		return nil
 	}
 	copyAuth := *a
+	if a.OpenAICompatibilityIndex != nil {
+		index := *a.OpenAICompatibilityIndex
+		copyAuth.OpenAICompatibilityIndex = &index
+	}
 	copyAuth.Quota = a.Quota.Clone()
 	if len(a.Attributes) > 0 {
 		copyAuth.Attributes = make(map[string]string, len(a.Attributes))
@@ -589,6 +597,11 @@ func (a *Auth) AccountInfo() (string, string) {
 			if v, ok := a.Metadata["email"].(string); ok {
 				email := strings.TrimSpace(v)
 				if email != "" {
+					if strings.EqualFold(a.Provider, "gemini-cli") {
+						if projectID, ok := a.Metadata["project_id"].(string); ok && strings.TrimSpace(projectID) != "" {
+							return "oauth", email + " (" + strings.TrimSpace(projectID) + ")"
+						}
+					}
 					return "oauth", email
 				}
 			}
@@ -600,13 +613,44 @@ func (a *Auth) AccountInfo() (string, string) {
 		}
 		return "api_key", ""
 	default:
+		if a.Metadata == nil {
+			return "", ""
+		}
+		if method, ok := a.Metadata["auth_method"].(string); ok {
+			switch strings.ToLower(strings.TrimSpace(method)) {
+			case "oauth":
+				for _, key := range []string{"email", "username", "name"} {
+					if value, okValue := a.Metadata[key].(string); okValue {
+						if trimmed := strings.TrimSpace(value); trimmed != "" {
+							return "oauth", trimmed
+						}
+					}
+				}
+			case "pat", "personal_access_token":
+				for _, key := range []string{"username", "email", "name", "token_preview"} {
+					if value, okValue := a.Metadata[key].(string); okValue {
+						if trimmed := strings.TrimSpace(value); trimmed != "" {
+							return "personal_access_token", trimmed
+						}
+					}
+				}
+				return "personal_access_token", ""
+			}
+		}
+		if strings.HasPrefix(strings.ToLower(a.Provider), "github") {
+			if username, ok := a.Metadata["username"].(string); ok {
+				if trimmed := strings.TrimSpace(username); trimmed != "" {
+					return "oauth", trimmed
+				}
+			}
+		}
 		return "", ""
 	}
 }
 
 // ExpirationTime attempts to extract the credential expiration timestamp from metadata.
-// It inspects common absolute expiry keys, expires_in plus timestamp, and nested
-// token objects to remain compatible with legacy auth file formats.
+// It inspects common keys such as "expired", "expire", "expires_at", and also
+// nested "token" objects to remain compatible with legacy auth file formats.
 func (a *Auth) ExpirationTime() (time.Time, bool) {
 	if a == nil {
 		return time.Time{}, false
@@ -645,11 +689,6 @@ func expirationFromMap(meta map[string]any) (time.Time, bool) {
 			}
 		}
 	}
-	if expiresIn, okExpiresIn := parseRelativeExpirySeconds(meta); okExpiresIn {
-		if timestamp, okTimestamp := parseRelativeExpiryTimestamp(meta); okTimestamp {
-			return timestamp.Add(time.Duration(expiresIn) * time.Second), true
-		}
-	}
 	for _, nestedKey := range []string{"token", "Token"} {
 		if nested, ok := meta[nestedKey]; ok {
 			switch val := nested.(type) {
@@ -665,28 +704,6 @@ func expirationFromMap(meta map[string]any) (time.Time, bool) {
 				if ts, ok1 := expirationFromMap(temp); ok1 {
 					return ts, true
 				}
-			}
-		}
-	}
-	return time.Time{}, false
-}
-
-func parseRelativeExpirySeconds(meta map[string]any) (int, bool) {
-	for _, key := range []string{"expires_in", "expiresIn"} {
-		if value, ok := meta[key]; ok {
-			if seconds, okSeconds := parseIntAny(value); okSeconds && seconds > 0 {
-				return seconds, true
-			}
-		}
-	}
-	return 0, false
-}
-
-func parseRelativeExpiryTimestamp(meta map[string]any) (time.Time, bool) {
-	for _, key := range []string{"timestamp", "issued_at", "issuedAt"} {
-		if value, ok := meta[key]; ok {
-			if timestamp, okTimestamp := parseTimeValue(value); okTimestamp && !timestamp.IsZero() {
-				return timestamp, true
 			}
 		}
 	}
@@ -737,10 +754,6 @@ func parseTimeValue(v any) (time.Time, bool) {
 			return normaliseUnix(unix), true
 		}
 	case float64:
-		return normaliseUnix(int64(value)), true
-	case int:
-		return normaliseUnix(int64(value)), true
-	case int32:
 		return normaliseUnix(int64(value)), true
 	case int64:
 		return normaliseUnix(value), true

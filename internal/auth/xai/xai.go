@@ -19,8 +19,7 @@ import (
 
 // XAIAuth performs xAI OAuth discovery, device-code login, and refresh.
 type XAIAuth struct {
-	httpClient      *http.Client
-	minPollInterval time.Duration
+	httpClient *http.Client
 }
 
 var xaiRefreshGroup singleflight.Group
@@ -212,16 +211,9 @@ func (a *XAIAuth) PollForToken(ctx context.Context, deviceCode *DeviceCodeRespon
 		tokenEndpoint = discovery.TokenEndpoint
 	}
 
-	minInterval := defaultPollInterval
-	if a != nil && a.minPollInterval > 0 {
-		minInterval = a.minPollInterval
-	}
-
 	interval := time.Duration(deviceCode.Interval) * time.Second
-	if a != nil && a.minPollInterval > 0 && deviceCode.Interval <= 0 {
-		interval = a.minPollInterval
-	} else if interval < minInterval {
-		interval = minInterval
+	if interval < defaultPollInterval {
+		interval = defaultPollInterval
 	}
 
 	deadline := time.Now().Add(MaxPollDuration)
@@ -309,11 +301,7 @@ func (a *XAIAuth) exchangeDeviceCode(ctx context.Context, tokenEndpoint, deviceC
 		case "authorization_pending":
 			return nil, nil, interval, true
 		case "slow_down":
-			step := defaultPollInterval
-			if a != nil && a.minPollInterval > 0 {
-				step = a.minPollInterval
-			}
-			nextInterval := interval + step
+			nextInterval := interval + defaultPollInterval
 			return nil, nil, nextInterval, true
 		case "expired_token":
 			return nil, fmt.Errorf("xai device code expired"), interval, false

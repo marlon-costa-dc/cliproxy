@@ -179,12 +179,8 @@ func TestGeminiExecutorCountTokensPrependsLeadingUser(t *testing.T) {
 		Payload: []byte(`{"contents":[{"role":"model","parts":[{"text":"prior output"}]}]}`),
 	}
 
-	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-	if _, errCount := executor.CountTokens(ctx, auth, request, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}); errCount != nil {
+	if _, errCount := executor.CountTokens(context.Background(), auth, request, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}); errCount != nil {
 		t.Fatalf("CountTokens() error = %v", errCount)
-	}
-	if !cliproxyexecutor.UpstreamAttempted(ctx) {
-		t.Fatal("CountTokens() did not mark the HTTP request as an upstream attempt")
 	}
 	contents := gjson.GetBytes(upstreamBody, "contents").Array()
 	if len(contents) != 2 || contents[0].Get("role").String() != "user" || contents[1].Get("role").String() != "model" {
