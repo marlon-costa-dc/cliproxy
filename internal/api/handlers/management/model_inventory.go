@@ -244,6 +244,14 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 			}
 			routeIndexExisting, exists := built.routes[routeID]
 			if !exists {
+				// The channel's wire protocol is a fact of the route: a claude
+				// channel route speaks Anthropic Messages regardless of any
+				// catalog declaration, and a published projection may not
+				// carry empty protocols.
+				protocols := append([]string(nil), registeredRoute.Model.Protocols...)
+				if len(protocols) == 0 && routeChannel == "claude" {
+					protocols = []string{"anthropic_messages"}
+				}
 				route := modelrouting.InventoryRoute{
 					RouteKey: modelrouting.RouteKeyJSON{
 						ModelKey: modelKey, RouteChannel: routeChannel,
@@ -260,7 +268,7 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 						},
 						registeredRoute.RuntimeModelID,
 					),
-					Protocols:       []string{},
+					Protocols:       protocols,
 					Restrictions:    []modelrouting.InventoryRestriction{},
 					Credentials:     []modelrouting.InventoryCredential{},
 					SelectionReason: "route surfaced from its channel without catalog declaration",
