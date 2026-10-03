@@ -13,7 +13,10 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
-const resolvedAPIKeyModelInfoMetadataKey = "cliproxy.resolved_api_key_model_info"
+const (
+	resolvedAPIKeyModelInfoMetadataKey = "cliproxy.resolved_api_key_model_info"
+	resolvedHomeModelInfoMetadataKey   = "cliproxy.resolved_home_model_info"
+)
 
 type resolvedModelPricingContextKey struct{}
 type resolvedProjectionDigestContextKey struct{}
@@ -93,6 +96,14 @@ func ResolvedProjectionDigestFromContext(ctx context.Context) string {
 	return digest
 }
 
+// ResolvedModelInfo returns the authoritative model capabilities bound to this execution attempt.
+func ResolvedModelInfo(req cliproxyexecutor.Request) (*registry.ModelInfo, bool) {
+	if modelInfo, ok := req.Metadata[resolvedHomeModelInfoMetadataKey].(*registry.ModelInfo); ok && modelInfo != nil {
+		return modelInfo, true
+	}
+	return ResolvedAPIKeyModelInfo(req)
+}
+
 // CodexAPIKeyModelIsCompat reports whether the selected codex-api-key model has
 // is-compat enabled. When true and codex.optimize-multi-agent-v2 is also true,
 // Codex MultiAgentV2 agent_message items are converted into portable Responses
@@ -145,6 +156,17 @@ func attachResolvedAPIKeyModelInfo(routing *apiKeyModelRoutingSnapshot, req clip
 	metadata := make(map[string]any, len(req.Metadata)+1)
 	maps.Copy(metadata, req.Metadata)
 	metadata[resolvedAPIKeyModelInfoMetadataKey] = modelInfo
+	req.Metadata = metadata
+	return req
+}
+
+func attachResolvedHomeModelInfo(req cliproxyexecutor.Request, modelInfo *registry.ModelInfo) cliproxyexecutor.Request {
+	if modelInfo == nil {
+		return req
+	}
+	metadata := make(map[string]any, len(req.Metadata)+1)
+	maps.Copy(metadata, req.Metadata)
+	metadata[resolvedHomeModelInfoMetadataKey] = modelInfo
 	req.Metadata = metadata
 	return req
 }
