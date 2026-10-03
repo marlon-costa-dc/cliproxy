@@ -508,6 +508,11 @@ type ClaudeModel struct {
 	CatalogRouteProviderID string `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
 	CatalogRouteModelID  string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
 
+	// Protocols declares the exact wire protocols implemented by this route.
+	// The model routing bootstrap refuses registered routes without explicit
+	// protocols, so declared models must name at least one.
+	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 
@@ -548,6 +553,10 @@ func (m ClaudeModel) GetCatalogRouteProviderID() string {
 
 func (m ClaudeModel) GetCatalogRouteModelID() string {
 	return m.CatalogRouteModelID
+}
+
+func (m ClaudeModel) GetProtocols() []string {
+	return m.Protocols
 }
 func (m ClaudeModel) GetIsCompat() bool        { return m.IsCompat }
 
@@ -836,12 +845,14 @@ type OpenAICompatibilityModel struct {
 	CatalogRouteProviderID string `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
 	CatalogRouteModelID    string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
 
+	// Protocols declares the exact wire protocols implemented by this route.
+	// The model routing bootstrap refuses registered routes without explicit
+	// protocols, so declared models must name at least one.
+	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+
 	// VariantID marks an explicitly proven model-owned variant. An empty value
 	// means the configured route serves the canonical model directly.
 	VariantID string `yaml:"variant-id,omitempty" json:"variant-id,omitempty"`
-
-	// Protocols declares the exact wire protocols implemented by this route.
-	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
 
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
