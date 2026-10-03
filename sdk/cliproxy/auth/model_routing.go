@@ -180,7 +180,17 @@ func (m *Manager) validateModelRoutingRuntime(projection *modelrouting.Config, n
 					return fmt.Errorf("%s: registered route %d has no model facts", path, registeredIndex)
 				}
 				info := snapshot.Model
-				if info.CatalogProviderID != route.RouteKey.ModelKey.CatalogProviderID || info.CatalogModelID != route.RouteKey.ModelKey.CanonicalModelID ||
+				declared := strings.TrimSpace(info.CatalogProviderID) != "" || strings.TrimSpace(info.CatalogModelID) != "" ||
+					strings.TrimSpace(info.CatalogRouteProviderID) != "" || strings.TrimSpace(info.CatalogRouteModelID) != ""
+				if !declared {
+					// Surfaced route: the registry holds no catalog facts, and
+					// the projection must carry exactly the channel identity
+					// the inventory published for it.
+					surfaced := modelrouting.ModelKey{CatalogProviderID: channel, CanonicalModelID: route.RuntimeModelID}
+					if route.RouteKey.ModelKey != surfaced || route.CatalogRouteProviderID != channel || route.CatalogRouteModelID != route.RuntimeModelID {
+						return fmt.Errorf("%s: registered route %d surfaced facts differ from the projection", path, registeredIndex)
+					}
+				} else if info.CatalogProviderID != route.RouteKey.ModelKey.CatalogProviderID || info.CatalogModelID != route.RouteKey.ModelKey.CanonicalModelID ||
 					info.CatalogRouteProviderID != route.CatalogRouteProviderID || info.CatalogRouteModelID != route.CatalogRouteModelID {
 					return fmt.Errorf("%s: registered route %d catalog facts differ from the projection", path, registeredIndex)
 				}
