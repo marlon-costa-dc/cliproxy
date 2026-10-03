@@ -467,10 +467,19 @@ func preferCodexWebsocketAuths(ctx context.Context, provider string, available [
 	return available
 }
 
-func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
+func collectAvailableByPriority(auths []*Auth, model string, now time.Time, excluded map[string]struct{}) (available map[int][]*Auth, cooldownCount int, eligibleCount int, earliest time.Time) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
 		candidate := auths[i]
+		// Skip nil candidates before consulting the exclusion map:
+		// candidate.ID on a nil entry would panic.
+		if candidate == nil {
+			continue
+		}
+		if _, skip := excluded[candidate.ID]; skip {
+			continue
+		}
+		eligibleCount++
 		blocked, reason, next := isAuthBlockedForModel(candidate, model, now)
 		if !blocked {
 			priority := authPriority(candidate)
@@ -484,25 +493,33 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 			}
 		}
 	}
-	return available, cooldownCount, earliest
+	return available, cooldownCount, eligibleCount, earliest
 }
 
-func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
-	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, false)
+func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, excluded ...map[string]struct{}) ([]*Auth, error) {
+	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, false, excluded...)
 }
 
-func getAvailableAuthsAcrossPriorities(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
-	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, true)
+func getAvailableAuthsAcrossPriorities(auths []*Auth, provider, model string, now time.Time, excluded ...map[string]struct{}) ([]*Auth, error) {
+	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, true, excluded...)
 }
 
-func getAvailableAuthsWithPriorityMode(auths []*Auth, provider, model string, now time.Time, allPriorities bool) ([]*Auth, error) {
+func getAvailableAuthsWithPriorityMode(auths []*Auth, provider, model string, now time.Time, allPriorities bool, excluded ...map[string]struct{}) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
+	var ex map[string]struct{}
+	if len(excluded) > 0 {
+		ex = excluded[0]
+	}
 
-	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
+	availableByPriority, cooldownCount, eligibleCount, earliest := collectAvailableByPriority(auths, model, now, ex)
 	if len(availableByPriority) == 0 {
-		if cooldownCount == len(auths) && !earliest.IsZero() {
+		// Count only eligible (non-excluded) auths: excluded entries are not
+		// part of the cooldown decision, otherwise the caller would get a
+		// non-retryable auth_unavailable instead of the cooldown error with
+		// Retry-After when every pickable auth is in fact cooling.
+		if eligibleCount > 0 && cooldownCount == eligibleCount && !earliest.IsZero() {
 			providerForError := provider
 			if providerForError == "mixed" {
 				providerForError = ""
@@ -589,7 +606,7 @@ func highestPriorityAuths(auths []*Auth) []*Auth {
 func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
+	available, err := getAvailableAuths(auths, provider, model, now, extractExcludedAuthIDs(opts.Metadata))
 	if err != nil {
 		return nil, err
 	}
@@ -647,7 +664,7 @@ func positiveWeightAuths(auths []*Auth) []*Auth {
 // Pick selects the next available auth using smooth weighted round-robin.
 func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
-	available, errAvailable := getAvailableAuths(positiveWeightAuths(auths), provider, model, time.Now())
+	available, errAvailable := getAvailableAuths(positiveWeightAuths(auths), provider, model, time.Now(), extractExcludedAuthIDs(opts.Metadata))
 	if errAvailable != nil {
 		return nil, errAvailable
 	}
@@ -787,12 +804,29 @@ func saturatingAddInt64(value, delta int64) int64 {
 func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
+	available, err := getAvailableAuths(auths, provider, model, now, extractExcludedAuthIDs(opts.Metadata))
 	if err != nil {
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	return available[0], nil
+}
+
+// ModelAvailability describes whether a credential can serve a model at an
+// instant, using the same rules as request-time credential selection.
+type ModelAvailability struct {
+	// Blocked reports that selection skips the credential at the instant.
+	Blocked bool
+	// QuotaCooldown reports that the active block is a quota cooldown.
+	QuotaCooldown bool
+	// RecoverAt is when a time-bound block ends; it is zero for open-ended blocks.
+	RecoverAt time.Time
+}
+
+// AvailabilityForModel returns the selection availability of auth for model at now.
+func AvailabilityForModel(auth *Auth, model string, now time.Time) ModelAvailability {
+	blocked, reason, next := isAuthBlockedForModel(auth, model, now)
+	return ModelAvailability{Blocked: blocked, QuotaCooldown: blocked && reason == blockReasonCooldown, RecoverAt: next}
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
@@ -884,6 +918,8 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 type SessionAffinitySelector struct {
 	fallback         Selector
 	cache            *SessionCache
+	quarantine       *SessionCache
+	bindMu           sync.Mutex
 	matcher          *cliproxysession.MerklePrefixMatcher
 	subagentAffinity bool
 }
@@ -918,6 +954,7 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 	return &SessionAffinitySelector{
 		fallback:         cfg.Fallback,
 		cache:            NewSessionCache(cfg.TTL),
+		quarantine:       NewSessionCache(cfg.TTL),
 		matcher:          cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
 		subagentAffinity: subagentAffinity,
 	}
@@ -978,12 +1015,13 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = primaryID
 	}
 	now := time.Now()
+	excluded := extractExcludedAuthIDs(opts.Metadata)
 	availabilityCandidates := auths
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
 	if primaryID == "" {
-		fallbackAuths, errAvailable := getAvailableAuths(availabilityCandidates, provider, model, now)
+		fallbackAuths, errAvailable := getAvailableAuths(availabilityCandidates, provider, model, now, excluded)
 		if errAvailable != nil {
 			return nil, errAvailable
 		}
@@ -993,11 +1031,10 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 
 	// A single availability pass serves both lookups: the bound credential is validated against
 	// every priority tier, while the fallback selector keeps seeing only the highest tier.
-	available, err := getAvailableAuthsAcrossPriorities(availabilityCandidates, provider, model, now)
+	available, err := getAvailableAuthsAcrossPriorities(availabilityCandidates, provider, model, now, excluded)
 	if err != nil {
 		return nil, err
 	}
-	fallbackAuths := highestPriorityAuths(available)
 
 	modelKey := canonicalModelKey(model)
 	cacheKey := provider + "::" + primaryID + "::" + modelKey
@@ -1012,6 +1049,8 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if fallbackID != "" && fallbackID != primaryID {
 		fallbackKey = provider + "::" + fallbackID + "::" + modelKey
 	}
+	available = s.excludeSessionQuarantine(cacheKey, fallbackKey, available)
+	fallbackAuths := highestPriorityAuths(available)
 	bind := func(authID string) {
 		if fallbackKey != "" && !isSubagent && !isFork {
 			s.cache.SetAliases(authID, cacheKey, fallbackKey)
@@ -1020,6 +1059,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		}
 	}
 
+	// Fast path outside bindMu: reuse valid cached binding without holding bindMu.
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
@@ -1028,20 +1068,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 				return auth, nil
 			}
 		}
-		// Cached auth not available, reselect via fallback selector for even distribution
-		auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
-		if err != nil {
-			return nil, err
-		}
-		if auth == nil {
-			return nil, nil
-		}
-		bind(auth.ID)
-		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
-		return auth, nil
-	}
-
-	if fallbackKey != "" {
+	} else if fallbackKey != "" {
 		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
@@ -1059,6 +1086,48 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		}
 	}
 
+	s.bindMu.Lock()
+	defer s.bindMu.Unlock()
+
+	// Under bindMu, re-check if a concurrent request refreshed or rebound the session.
+	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
+		for _, auth := range available {
+			if auth.ID == cachedAuthID {
+				entry.Infof("session-affinity: concurrent cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+				bind(auth.ID)
+				return auth, nil
+			}
+		}
+	} else if fallbackKey != "" {
+		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
+			for _, auth := range available {
+				if auth.ID == cachedAuthID {
+					entry.Infof("session-affinity: concurrent cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+					bind(auth.ID)
+					return auth, nil
+				}
+			}
+		}
+	}
+
+	// Authoritative stale observation conducted under bindMu using non-refreshing token read.
+	// Observe both alias groups: they may be split across different auths, in
+	// which case failover must reconcile both, not just the first one found.
+	staleKey := cacheKey
+	staleAuthID, staleGen, staleAliases, hasStale := s.cache.GetWithGeneration(cacheKey)
+	splitAuthID := ""
+	var splitGen uint64
+	var splitAliases []string
+	hasSplit := false
+	if fallbackKey != "" {
+		splitAuthID, splitGen, splitAliases, hasSplit = s.cache.GetWithGeneration(fallbackKey)
+	}
+	splitGroups := hasStale && hasSplit && staleAuthID != splitAuthID
+	if !hasStale && hasSplit {
+		staleKey = fallbackKey
+		staleAuthID, staleGen, staleAliases, hasStale = splitAuthID, splitGen, splitAliases, true
+	}
+
 	auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
 	if err != nil {
 		return nil, err
@@ -1066,13 +1135,257 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if auth == nil {
 		return nil, nil
 	}
+
+	if hasStale {
+		if splitGroups {
+			// Split alias groups (prompt-cache and conversation aliases bound to
+			// different auths): merge BOTH alias sets into a single group bound
+			// to the selected auth. Rebinding the groups separately would leave
+			// two groups on the same auth, and later housekeeping (OnResult)
+			// processes only the group holding the request's primary key — the
+			// surviving split group would keep selecting a failed auth.
+			if !s.mergeSplitAliasGroupsCAS(cacheKey, fallbackKey, auth.ID) {
+				entry.Infof("session-affinity: split-group merge lost to concurrent writer after retries | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+			}
+		} else {
+			additional := []string{cacheKey}
+			if fallbackKey != "" {
+				additional = append(additional, fallbackKey)
+			}
+			if s.rebindAliasGroupCAS(staleKey, staleAuthID, staleGen, staleAliases, auth.ID, additional) {
+				entry.Infof("session-affinity: rebound stale alias group | session=%s oldAuth=%s newAuth=%s gen=%d", truncateSessionID(primaryID), staleAuthID, auth.ID, staleGen)
+			} else {
+				entry.Infof("session-affinity: CAS rebind aborted due to concurrent mutation, serving selected auth statelessly | session=%s auth=%s", truncateSessionID(primaryID), auth.ID)
+			}
+		}
+		return auth, nil
+	}
+
 	bind(auth.ID)
 	if isFork && fallbackID != "" {
 		entry.Infof("session-affinity: fork bound to new auth | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
 	} else {
-		entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+		entry.Infof("session-affinity: cache miss, bound candidate | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 	}
 	return auth, nil
+}
+
+// rebindAliasGroupCAS atomically rebinds a session alias group to newAuthID.
+// When the compare-and-swap loses to a concurrent writer, the group is
+// re-observed and the binding retried (bounded), so the auth selected for
+// this request is not silently dropped by a stale generation.
+func (s *SessionAffinitySelector) rebindAliasGroupCAS(sessionKey string, expectedAuthID string, expectedGen uint64, expectedAliases []string, newAuthID string, additionalAliases []string) bool {
+	for attempt := 0; attempt < 3; attempt++ {
+		if s.cache.CompareAndReplaceAliases(expectedAuthID, expectedGen, expectedAliases, newAuthID, additionalAliases...) {
+			return true
+		}
+		authID, gen, aliases, ok := s.cache.GetWithGeneration(sessionKey)
+		if !ok {
+			return false
+		}
+		expectedAuthID, expectedGen, expectedAliases = authID, gen, aliases
+	}
+	return false
+}
+
+// mergeSplitAliasGroupsCAS reconciles two split session alias groups (a
+// prompt-cache alias and a conversation alias previously bound to different
+// auths) into a single group bound to authID. Merging matters because later
+// housekeeping (OnResult) processes only the group holding the request's
+// primary key: two surviving groups would let the conversation-only alias
+// keep selecting a failed auth. The merge is retried with fresh observation
+// when a concurrent writer invalidates the expectations (bounded).
+func (s *SessionAffinitySelector) mergeSplitAliasGroupsCAS(cacheKey, fallbackKey string, authID string) bool {
+	// retainedF holds the fallback group's aliases once its delete has
+	// committed. A retry after a lost primary CAS would otherwise re-observe
+	// the (now deleted) fallback entry and rebuild merged from cacheKey and
+	// fallbackKey alone, permanently dropping the fallback group's
+	// historical aliases from the rebound group.
+	//
+	// Mirror of CLIProxyAPI e768fba9.
+	var retainedF []string
+	var deletedAuthF string
+	for attempt := 0; attempt < 3; attempt++ {
+		authP, genP, aliasesP, okP := s.cache.GetWithGeneration(cacheKey)
+		authF, genF, aliasesF, okF := s.cache.GetWithGeneration(fallbackKey)
+		if !okF {
+			aliasesF = retainedF
+		}
+		merged := mergeSessionAliases(aliasesP, aliasesF...)
+		merged = mergeSessionAliases(merged, cacheKey, fallbackKey)
+		if okF && authF != authID {
+			removed := s.cache.CompareAndDeleteGroup(fallbackKey, authF, genF, aliasesF)
+			if removed == nil {
+				continue
+			}
+			deletedAuthF = authF
+			retainedF = mergeSessionAliases(retainedF, removed...)
+		}
+		if okP {
+			if s.cache.CompareAndReplaceAliases(authP, genP, aliasesP, authID, merged...) {
+				return true
+			}
+			continue
+		}
+		s.cache.SetAliases(authID, merged...)
+		return true
+	}
+	if len(retainedF) > 0 && deletedAuthF != "" {
+		s.cache.RestoreAliasesIfAbsent(deletedAuthF, retainedF...)
+	}
+	return false
+}
+
+// OnResult handles session affinity binding or release based on execution outcome.
+// Explicit harness identities take precedence; LCP matcher bindings are
+// reconciled independently before the explicit/quarantine bookkeeping below.
+func (s *SessionAffinitySelector) OnResult(res Result) {
+	if s == nil || res.AuthID == "" {
+		return
+	}
+
+	explicitID, explicitFallbackID := extractExplicitSessionIDs(res.Options.Headers, res.Options.OriginalRequest, res.Options.Metadata)
+
+	// Use the affinity selection namespace when present so mixed pools bind under
+	// the same key selection read (the literal "mixed" pool key); otherwise fall
+	// back to the auth's actual provider for single-provider callers.
+	ns := res.Provider
+	if raw, ok := res.Options.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey].(string); ok && raw != "" {
+		ns = raw
+	}
+	// Use the affinity model namespace (the normalized Pick-time model) when present;
+	// fall back to the rewritten result model for metadata-absent callers. Both are
+	// canonicalized the same way Pick builds its cache key, so thinking-suffix
+	// variants of the same model release the same binding they selected.
+	nsModel := canonicalModelKey(res.Model)
+	if raw, ok := res.Options.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey].(string); ok && raw != "" {
+		nsModel = canonicalModelKey(raw)
+	}
+
+	if res.Error != nil && shouldSkipCredentialCooldown(res.Error) {
+		// Request-scoped or caller-attributed failures are not evidence that the
+		// selected credential is unhealthy, so preserve both explicit and LCP bindings.
+		return
+	}
+
+	// LCP bindings are independent from explicit harness bindings. A successful
+	// extension is recorded as a new sequence while credential-attributed failures
+	// only remove the exact sequence that was attempted.
+	if explicitID == "" && s.matcher != nil {
+		if namespace := lcpAffinityNamespace(ns, nsModel, res.Options.Metadata); namespace != "" {
+			fingerprints, minPrefixLength := lcpFingerprintsFromMetadata(res.Options.Metadata)
+			if len(fingerprints) == 0 {
+				turns := cliproxysession.ExtractCanonicalTurns(res.Options.SourceFormat, res.Options.OriginalRequest)
+				fingerprints, minPrefixLength = s.matcher.Prepare(turns)
+			}
+			if len(fingerprints) > 0 && minPrefixLength > 0 && minPrefixLength <= len(fingerprints) {
+				if res.Success {
+					s.matcher.TouchFingerprints(namespace, fingerprints, minPrefixLength, res.AuthID)
+				} else {
+					var generation uint64
+					if res.Options.Metadata != nil {
+						if gen, ok := res.Options.Metadata[cliproxyexecutor.LCPAccessGenerationMetadataKey].(uint64); ok {
+							generation = gen
+						}
+					}
+					s.matcher.RemoveFingerprintsBefore(namespace, fingerprints, res.AuthID, generation)
+				}
+			}
+		}
+	}
+
+	if s.cache == nil {
+		return
+	}
+	if explicitID == "" && s.matcher != nil && res.Options.Metadata != nil {
+		if _, isLCP := res.Options.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey]; isLCP {
+			return
+		}
+	}
+
+	primaryID, fallbackID := explicitID, explicitFallbackID
+	if primaryID == "" {
+		primaryID, fallbackID = extractSessionIDs(res.Options.Headers, res.Options.OriginalRequest, res.Options.Metadata)
+	}
+	if primaryID == "" && fallbackID == "" {
+		return
+	}
+
+	cacheKey := ns + "::" + primaryID + "::" + nsModel
+	var fallbackKey string
+	if fallbackID != "" && fallbackID != primaryID {
+		fallbackKey = ns + "::" + fallbackID + "::" + nsModel
+	}
+
+	if res.Success {
+		if fallbackKey != "" {
+			s.cache.SetAliases(res.AuthID, cacheKey, fallbackKey)
+		} else if current, ok := s.cache.Get(cacheKey); !ok || current == res.AuthID {
+			// Create or refresh in place; a delayed success from a stale auth
+			// must not steal back a binding that already rebound to another.
+			s.cache.Set(cacheKey, res.AuthID)
+		}
+		return
+	}
+
+	var aliases []string
+	if authID, _, groupAliases, ok := s.cache.GetWithGeneration(cacheKey); ok && authID == res.AuthID {
+		aliases = groupAliases
+		s.cache.Invalidate(cacheKey)
+	} else if fallbackKey != "" {
+		if authID, _, groupAliases, ok := s.cache.GetWithGeneration(fallbackKey); ok && authID == res.AuthID {
+			aliases = groupAliases
+			s.cache.Invalidate(fallbackKey)
+		}
+	}
+	if len(aliases) == 0 {
+		aliases = []string{cacheKey, fallbackKey}
+	}
+	s.quarantineSessionAuth(aliases, res.AuthID, res.RetryAfter)
+}
+
+func (s *SessionAffinitySelector) excludeSessionQuarantine(cacheKey, fallbackKey string, auths []*Auth) []*Auth {
+	if s == nil || s.quarantine == nil || len(auths) == 0 {
+		return auths
+	}
+	filtered := make([]*Auth, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		blocked := false
+		for _, key := range []string{cacheKey, fallbackKey} {
+			if key == "" {
+				continue
+			}
+			if _, ok := s.quarantine.Get(key + "::failed::" + auth.ID); ok {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			filtered = append(filtered, auth)
+		}
+	}
+	return filtered
+}
+
+func (s *SessionAffinitySelector) quarantineSessionAuth(cacheKeys []string, authID string, retryAfter *time.Duration) {
+	if s == nil || s.quarantine == nil || authID == "" {
+		return
+	}
+	delay := 5 * time.Second
+	if retryAfter != nil && *retryAfter > 0 {
+		delay = *retryAfter
+	}
+	expiresAt := time.Now().Add(delay)
+	for _, key := range cacheKeys {
+		if key == "" {
+			continue
+		}
+		quarantineKey := key + "::failed::" + authID
+		s.quarantine.setAliasesUntil(authID, expiresAt, quarantineKey)
+	}
 }
 
 func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth, entry *log.Entry) (*Auth, bool, error) {
@@ -1100,7 +1413,8 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
-	available, errAvailable := getAvailableAuthsAcrossPriorities(availabilityCandidates, provider, model, time.Now())
+	excluded := extractExcludedAuthIDs(opts.Metadata)
+	available, errAvailable := getAvailableAuthsAcrossPriorities(availabilityCandidates, provider, model, time.Now(), excluded)
 	if errAvailable != nil {
 		return nil, true, errAvailable
 	}
@@ -1241,6 +1555,9 @@ func (s *SessionAffinitySelector) Stop() {
 	if s.cache != nil {
 		s.cache.Stop()
 	}
+	if s.quarantine != nil {
+		s.quarantine.Stop()
+	}
 	if s.matcher != nil {
 		s.matcher.Clear()
 	}
@@ -1255,91 +1572,11 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 	if s.cache != nil {
 		s.cache.InvalidateAuth(authID)
 	}
+	if s.quarantine != nil {
+		s.quarantine.InvalidateAuth(authID)
+	}
 	if s.matcher != nil {
 		s.matcher.InvalidateAuth(authID)
-	}
-}
-
-// OnResult handles session affinity binding or release based on execution outcome.
-func (s *SessionAffinitySelector) OnResult(res Result) {
-	if s == nil || res.AuthID == "" {
-		return
-	}
-
-	explicitID, explicitFallbackID := extractExplicitSessionIDs(res.Options.Headers, res.Options.OriginalRequest, res.Options.Metadata)
-	ns := res.Provider
-	if raw, ok := res.Options.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey].(string); ok && raw != "" {
-		ns = raw
-	}
-	nsModel := canonicalModelKey(res.Model)
-	if raw, ok := res.Options.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey].(string); ok && raw != "" {
-		nsModel = canonicalModelKey(raw)
-	}
-
-	if res.Error != nil && shouldSkipCredentialCooldown(res.Error) {
-		// Request-scoped or caller-attributed failures are not evidence that the
-		// selected credential is unhealthy, so preserve both explicit and LCP bindings.
-		return
-	}
-
-	// LCP bindings are independent from explicit harness bindings. A successful
-	// extension is recorded as a new sequence while credential-attributed failures
-	// only remove the exact sequence that was attempted.
-	if explicitID == "" && s.matcher != nil {
-		if namespace := lcpAffinityNamespace(ns, nsModel, res.Options.Metadata); namespace != "" {
-			fingerprints, minPrefixLength := lcpFingerprintsFromMetadata(res.Options.Metadata)
-			if len(fingerprints) == 0 {
-				turns := cliproxysession.ExtractCanonicalTurns(res.Options.SourceFormat, res.Options.OriginalRequest)
-				fingerprints, minPrefixLength = s.matcher.Prepare(turns)
-			}
-			if len(fingerprints) > 0 && minPrefixLength > 0 && minPrefixLength <= len(fingerprints) {
-				if res.Success {
-					s.matcher.TouchFingerprints(namespace, fingerprints, minPrefixLength, res.AuthID)
-				} else {
-					var generation uint64
-					if res.Options.Metadata != nil {
-						if gen, ok := res.Options.Metadata[cliproxyexecutor.LCPAccessGenerationMetadataKey].(uint64); ok {
-							generation = gen
-						}
-					}
-					s.matcher.RemoveFingerprintsBefore(namespace, fingerprints, res.AuthID, generation)
-				}
-			}
-		}
-	}
-
-	if s.cache == nil {
-		return
-	}
-	if explicitID == "" && s.matcher != nil && res.Options.Metadata != nil {
-		if _, isLCP := res.Options.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey]; isLCP {
-			return
-		}
-	}
-	primaryID, fallbackID := explicitID, explicitFallbackID
-	if primaryID == "" {
-		primaryID, fallbackID = extractSessionIDs(res.Options.Headers, res.Options.OriginalRequest, res.Options.Metadata)
-	}
-	if primaryID == "" && fallbackID == "" {
-		return
-	}
-
-	cacheKey := ns + "::" + primaryID + "::" + nsModel
-	var fallbackKey string
-	if fallbackID != "" && fallbackID != primaryID && !isSubagentSession(primaryID, fallbackID) {
-		fallbackKey = ns + "::" + fallbackID + "::" + nsModel
-	}
-	if res.Success {
-		s.cache.Touch(cacheKey, res.AuthID)
-		if fallbackKey != "" {
-			s.cache.Touch(fallbackKey, res.AuthID)
-		}
-		return
-	}
-
-	s.cache.CompareAndDelete(cacheKey, res.AuthID)
-	if fallbackKey != "" {
-		s.cache.CompareAndDelete(fallbackKey, res.AuthID)
 	}
 }
 

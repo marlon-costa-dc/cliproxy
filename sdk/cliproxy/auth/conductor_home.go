@@ -295,7 +295,7 @@ func shouldReturnLastErrorOnPickFailure(homeMode bool, lastErr error, errPick er
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(authErr.Code)) {
-	case "auth_not_found", "auth_unavailable":
+	case "auth_not_found", "auth_unavailable", "home_unavailable":
 		return true
 	default:
 		return false
@@ -1401,13 +1401,25 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 				if isCredentialScopedError(errExec) {
 					result.CredentialScope = true
 				}
-				m.MarkResult(creditsCtx, result)
+				if errRecord := m.MarkResult(creditsCtx, result); errRecord != nil {
+					return cliproxyexecutor.Response{}, false, joinExecutionResultError(errExec, errRecord)
+				}
 				if result.CredentialScope {
 					break
 				}
 				continue
 			}
-			m.MarkResult(creditsCtx, result)
+			if isEmptyCompletionPayload(resp.Payload) {
+				result.Success = false
+				result.Error = errEmptyCompletion
+				if errRecord := m.recordExecutionResult(creditsCtx, result, c.auth, false); errRecord != nil {
+					return cliproxyexecutor.Response{}, false, joinExecutionResultError(errEmptyCompletion, errRecord)
+				}
+				continue
+			}
+			if errRecord := m.MarkResult(creditsCtx, result); errRecord != nil {
+				return cliproxyexecutor.Response{}, false, joinExecutionResultError(nil, errRecord)
+			}
 			attemptAliasResult := resolveAttemptAliasResult(routing, c.auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, true, nil

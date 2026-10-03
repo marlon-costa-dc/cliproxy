@@ -213,15 +213,18 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body = reconcileClaudeCodeContextManagement(body, contextManagementState)
 	body = normalizeClaudeSamplingForUpstream(body, confirmedClaudeCode)
 
-	// Default cache_control for translated entrypoints (Responses/Chat/Gemini) and other
-	// non-native callers. Confirmed native Claude Code owns its marker placement and must
-	// not be rewritten. Cloaked requests always run section-independent ensure so cloaking's
-	// first-user marker cannot suppress system/latest-user breakpoints.
-	// cloaked and confirmedClaudeCode are mutually exclusive: resolveClaudeWirePolicy
-	// forces Cloak off for a confirmed native client.
-	cpaOwnsCacheControl := shouldEnsureCacheControl(body, cloaked, confirmedClaudeCode)
-	if cpaOwnsCacheControl {
-		body = ensureCacheControl(body)
+	cpaOwnsCacheControl := !e.cacheControlDisabled && shouldEnsureCacheControl(body, cloaked, confirmedClaudeCode)
+	if e.cacheControlDisabled {
+		body = stripCacheControls(body)
+	} else {
+		if cpaOwnsCacheControl {
+			body = ensureCacheControl(body)
+		}
+		body = enforceCacheControlLimit(body, 4)
+		if cpaOwnsCacheControl && fp.ProfileClaudeCodeCLI {
+			body = upgradeClaudeCacheControlTTL(body, claudeCacheControlTTL1h)
+		}
+		body = normalizeCacheControlTTL(body)
 	}
 
 	// Enforce Anthropic's cache_control block limit (max 4 breakpoints per request).
