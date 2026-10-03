@@ -858,6 +858,18 @@ func normalizeCompatConfigModalities(raw []string) []string {
 	return out
 }
 
+// modelCatalogEntry is implemented by configured models that declare their
+// explicit models.dev catalog identity — the same four facts the
+// openai-compatibility models always carry. Declared facts join the route
+// into the model inventory; undeclared routes surface under their channel
+// identity without a catalog entry.
+type modelCatalogEntry interface {
+	GetCatalogProviderID() string
+	GetCatalogModelID() string
+	GetCatalogRouteProviderID() string
+	GetCatalogRouteModelID() string
+}
+
 func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {
 	if len(models) == 0 {
 		return nil
@@ -871,6 +883,12 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 		info := buildConfiguredModelInfo(model, ownedBy, modelType, now, name, true)
 		if info == nil {
 			continue
+		}
+		if catalog, okCatalog := any(model).(modelCatalogEntry); okCatalog {
+			info.CatalogProviderID = strings.TrimSpace(catalog.GetCatalogProviderID())
+			info.CatalogModelID = strings.TrimSpace(catalog.GetCatalogModelID())
+			info.CatalogRouteProviderID = strings.TrimSpace(catalog.GetCatalogRouteProviderID())
+			info.CatalogRouteModelID = strings.TrimSpace(catalog.GetCatalogRouteModelID())
 		}
 		alias := info.ID
 		key := strings.ToLower(alias)
