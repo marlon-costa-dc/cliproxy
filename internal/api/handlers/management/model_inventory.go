@@ -237,7 +237,7 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 				return nil, fmt.Errorf("registered route %d has no matching credential", routeIndex)
 			}
 			if auth.QuotaDomain == "" || strings.TrimSpace(auth.QuotaDomain) != auth.QuotaDomain || auth.QuotaDomain == "unknown" {
-				return nil, fmt.Errorf("registered route %d has no canonical quota domain", routeIndex)
+				return nil, fmt.Errorf("registered route %d has no canonical quota domain (client=%q provider=%q authID=%q quotaDomain=%q channel=%q model=%q)", routeIndex, registeredRoute.ClientID, auth.Provider, auth.ID, auth.QuotaDomain, registeredRoute.RouteChannel, registeredRoute.RuntimeModelID)
 			}
 			if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 				return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)
@@ -284,7 +284,7 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 			return nil, fmt.Errorf("registered route %d has no matching credential", routeIndex)
 		}
 		if auth.QuotaDomain == "" || strings.TrimSpace(auth.QuotaDomain) != auth.QuotaDomain || auth.QuotaDomain == "unknown" {
-			return nil, fmt.Errorf("registered route %d has no canonical quota domain", routeIndex)
+			return nil, fmt.Errorf("registered route %d has no canonical quota domain (client=%q provider=%q authID=%q quotaDomain=%q channel=%q model=%q)", routeIndex, registeredRoute.ClientID, auth.Provider, auth.ID, auth.QuotaDomain, registeredRoute.RouteChannel, registeredRoute.RuntimeModelID)
 		}
 		if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 			return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)

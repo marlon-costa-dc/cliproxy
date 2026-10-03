@@ -411,6 +411,12 @@ type ClaudeKey struct {
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// QuotaDomain identifies the quota pool for this exact credential, the
+	// same explicit fact OpenAI-compatible credentials declare. Empty entries
+	// are rejected by the model inventory: every registered route must report
+	// one canonical quota domain.
+	QuotaDomain string `yaml:"quota-domain,omitempty" json:"quota-domain,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
