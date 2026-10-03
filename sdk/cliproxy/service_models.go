@@ -870,6 +870,13 @@ type modelCatalogEntry interface {
 	GetCatalogRouteModelID() string
 }
 
+// modelProtocolsEntry is implemented by configured models that declare the
+// exact wire protocols their route implements — the model routing bootstrap
+// refuses registered routes without explicit protocols.
+type modelProtocolsEntry interface {
+	GetProtocols() []string
+}
+
 func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {
 	if len(models) == 0 {
 		return nil
@@ -889,6 +896,9 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			info.CatalogModelID = strings.TrimSpace(catalog.GetCatalogModelID())
 			info.CatalogRouteProviderID = strings.TrimSpace(catalog.GetCatalogRouteProviderID())
 			info.CatalogRouteModelID = strings.TrimSpace(catalog.GetCatalogRouteModelID())
+		}
+		if protocols, okProtocols := any(model).(modelProtocolsEntry); okProtocols {
+			info.Protocols = append([]string(nil), protocols.GetProtocols()...)
 		}
 		alias := info.ID
 		key := strings.ToLower(alias)
