@@ -188,16 +188,17 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		}
 		addConfigHeadersToAttrs(ck.Headers, attrs)
 		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "claude",
-			Label:      "claude-apikey",
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			Attributes: attrs,
-			Metadata:   metadata,
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			ID:          id,
+			Provider:    "claude",
+			QuotaDomain: ck.QuotaDomain,
+			Label:       "claude-apikey",
+			Prefix:      prefix,
+			Status:      coreauth.StatusActive,
+			ProxyURL:    proxyURL,
+			Attributes:  attrs,
+			Metadata:    metadata,
+			CreatedAt:   now,
+			UpdatedAt:   now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {

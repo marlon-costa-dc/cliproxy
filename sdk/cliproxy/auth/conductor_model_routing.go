@@ -180,13 +180,6 @@ func normalizedRoutingProviderSet(providers []string) map[string]struct{} {
 	return result
 }
 
-func modelRoutingAttemptLimit(policy modelrouting.FailurePolicy, attempts []modelRoutingCandidateAttempt) int {
-	if len(attempts) == 1 && attempts[0].candidate.bootstrap {
-		return 1
-	}
-	return policy.MaxCandidateAttempts
-}
-
 // executeWithModelRouting performs at most one upstream attempt per ranked
 // candidate and advances only when a configured typed rule matches.
 func (m *Manager) executeWithModelRouting(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -198,15 +191,11 @@ func (m *Manager) executeWithModelRouting(ctx context.Context, providers []strin
 		return cliproxyexecutor.Response{}, errSelect
 	}
 	policy := m.modelRoutingFailurePolicy()
-	attemptLimit := modelRoutingAttemptLimit(policy, attempts)
 	tracker := newRouteAttemptTracker()
 	trace := &modelRoutingTrace{}
-	causes := make([]error, 0, attemptLimit)
+	causes := make([]error, 0, len(attempts))
 	var firstAttempt modelRoutingCandidateAttempt
 	for _, attempt := range attempts {
-		if len(causes) >= attemptLimit {
-			break
-		}
 		if errCaller := ctx.Err(); errCaller != nil {
 			return cliproxyexecutor.Response{}, m.newModelRoutingExecutionError(joinModelRoutingCauses(causes, errCaller), firstAttempt, trace)
 		}
@@ -240,7 +229,7 @@ func (m *Manager) executeWithModelRouting(ctx context.Context, providers []strin
 		}
 		trace.recordFailure(attempt, errExecute, match)
 		causes = append(causes, errExecute)
-		if !eligible || len(causes) >= attemptLimit {
+		if !eligible || len(causes) == len(attempts) {
 			return response, m.newModelRoutingExecutionError(joinModelRoutingCauses(causes), firstAttempt, trace)
 		}
 	}
@@ -259,15 +248,11 @@ func (m *Manager) executeCountWithModelRouting(ctx context.Context, providers []
 		return cliproxyexecutor.Response{}, errSelect
 	}
 	policy := m.modelRoutingFailurePolicy()
-	attemptLimit := modelRoutingAttemptLimit(policy, attempts)
 	tracker := newRouteAttemptTracker()
 	trace := &modelRoutingTrace{}
-	causes := make([]error, 0, attemptLimit)
+	causes := make([]error, 0, len(attempts))
 	var firstAttempt modelRoutingCandidateAttempt
 	for _, attempt := range attempts {
-		if len(causes) >= attemptLimit {
-			break
-		}
 		if errCaller := ctx.Err(); errCaller != nil {
 			return cliproxyexecutor.Response{}, m.newModelRoutingExecutionError(joinModelRoutingCauses(causes, errCaller), firstAttempt, trace)
 		}
@@ -301,7 +286,7 @@ func (m *Manager) executeCountWithModelRouting(ctx context.Context, providers []
 		}
 		trace.recordFailure(attempt, errExecute, match)
 		causes = append(causes, errExecute)
-		if !eligible || len(causes) >= attemptLimit {
+		if !eligible || len(causes) == len(attempts) {
 			return response, m.newModelRoutingExecutionError(joinModelRoutingCauses(causes), firstAttempt, trace)
 		}
 	}
@@ -320,15 +305,11 @@ func (m *Manager) executeStreamWithModelRouting(ctx context.Context, providers [
 		return nil, errSelect
 	}
 	policy := m.modelRoutingFailurePolicy()
-	attemptLimit := modelRoutingAttemptLimit(policy, attempts)
 	tracker := newRouteAttemptTracker()
 	trace := &modelRoutingTrace{}
-	causes := make([]error, 0, attemptLimit)
+	causes := make([]error, 0, len(attempts))
 	var firstAttempt modelRoutingCandidateAttempt
 	for _, attempt := range attempts {
-		if len(causes) >= attemptLimit {
-			break
-		}
 		if errCaller := ctx.Err(); errCaller != nil {
 			return nil, m.newModelRoutingExecutionError(joinModelRoutingCauses(causes, errCaller), firstAttempt, trace)
 		}
@@ -377,7 +358,7 @@ func (m *Manager) executeStreamWithModelRouting(ctx context.Context, providers [
 		}
 		trace.recordFailure(attempt, errExecute, match)
 		causes = append(causes, errExecute)
-		if !eligible || len(causes) >= attemptLimit {
+		if !eligible || len(causes) == len(attempts) {
 			return nil, m.newModelRoutingExecutionError(joinModelRoutingCauses(causes), firstAttempt, trace)
 		}
 	}

@@ -464,6 +464,13 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 		}
 		clone := *model
 		clone.ID = modelID
+		// The channel's wire protocol is a fact of the route: a claude
+		// credential speaks Anthropic Messages even when its discovered model
+		// facts carry no protocol list (the model routing bootstrap refuses
+		// protocol-less routes).
+		if len(clone.Protocols) == 0 && providerKey == "claude" {
+			clone.Protocols = []string{"anthropic_messages"}
+		}
 		normalizedModels = append(normalizedModels, &clone)
 	}
 	if len(normalizedModels) == 0 {

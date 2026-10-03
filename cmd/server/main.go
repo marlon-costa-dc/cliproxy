@@ -426,7 +426,7 @@ func main() {
 			parsed = &config.Config{}
 		}
 		parsed.Home = homeCfg
-		parsed.Port = config.NormalizeHomePort(parsed.Port)
+		parsed.Port = 8317 // Default to 8317 for home mode, can be overridden by home config
 		parsed.UsageStatisticsEnabled = true
 		pluginSyncCfg := *parsed
 		parsed.Plugins.StoreAuth = nil

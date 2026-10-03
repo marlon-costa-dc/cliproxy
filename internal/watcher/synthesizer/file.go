@@ -203,10 +203,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		// File-based OAuth credentials have no per-file quota configuration.
 		// Their canonical provider identity is the canonical quota pool.
 		QuotaDomain: provider,
-		Label:    label,
-		Prefix:   prefix,
-		Status:   status,
-		Disabled: disabled,
+		Label:       label,
+		Prefix:      prefix,
+		Status:      status,
+		Disabled:    disabled,
 		Attributes: map[string]string{
 			coreauth.AttributeSource:        fullPath,
 			coreauth.AttributePath:          fullPath,

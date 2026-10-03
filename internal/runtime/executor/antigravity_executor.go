@@ -39,7 +39,7 @@ const (
 	antigravityClientIDEnv                 = "CLIPROXY_ANTIGRAVITY_OAUTH_CLIENT_ID"
 	antigravityClientSecretEnv             = "CLIPROXY_ANTIGRAVITY_OAUTH_CLIENT_SECRET"
 	antigravityAuthType                    = "antigravity"
-	antigravityRequestTokenSafetyWindow    = 5 * time.Minute
+	refreshSkew                            = 3000 * time.Second
 	antigravityCreditsHintRefreshInterval  = 10 * time.Minute
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
@@ -426,25 +426,26 @@ func normalizeAntigravityGeminiFunctionResponseRoles(rawJSON []byte) []byte {
 
 		var contentJSON []byte
 		contentChanged := false
-		if len(pending) > 0 && len(responses) > 0 {
+		if len(pending) == len(responses) {
 			ordered := make([]json.RawMessage, 0, partCount)
 			used := make([]bool, len(responses))
 			for _, call := range pending {
+				matched := -1
 				for responseIndex, response := range responses {
 					if used[responseIndex] {
 						continue
 					}
 					if (call.id != "" && response.id == call.id) || (call.id == "" && call.name != "" && response.name == call.name) {
-						used[responseIndex] = true
-						ordered = append(ordered, responseParts[responseIndex])
+						matched = responseIndex
 						break
 					}
 				}
-			}
-			for responseIndex := range responses {
-				if !used[responseIndex] {
-					ordered = append(ordered, responseParts[responseIndex])
+				if matched < 0 {
+					ordered = nil
+					break
 				}
+				used[matched] = true
+				ordered = append(ordered, responseParts[matched])
 			}
 			if len(ordered) == len(responseParts) {
 				ordered = append(ordered, otherParts...)

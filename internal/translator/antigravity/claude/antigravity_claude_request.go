@@ -368,11 +368,8 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				continue
 			}
 			originalRole := roleResult.String()
-			var precedingToolUseIDs []string
-			if originalRole != "system" {
-				precedingToolUseIDs = pendingToolUseIDs
-				pendingToolUseIDs = nil
-			}
+			precedingToolUseIDs := pendingToolUseIDs
+			pendingToolUseIDs = nil
 			role := originalRole
 			if role == "assistant" {
 				role = "model"
@@ -866,7 +863,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		out, _ = sjson.SetRawBytes(out, "request.systemInstruction", antigravityClaudeContent("user", systemParts))
 	}
 	if len(contentItems) > 0 {
-		out = translatorcommon.SetRawArrayItems(out, "request.contents", translatorcommon.MergeAdjacentGeminiContents(contentItems))
+		out = translatorcommon.SetRawArrayItems(out, "request.contents", contentItems)
 	}
 	if toolDeclCount > 0 {
 		out, _ = sjson.SetRawBytes(out, "request.tools", toolsJSON)

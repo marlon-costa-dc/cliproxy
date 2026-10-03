@@ -84,11 +84,6 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	fail := resolveFail(ctx, record, failed)
 
-	stream := record.Stream
-	if !stream {
-		stream = coreusage.StreamFromContext(ctx)
-	}
-
 	detail := requestDetail{
 		Timestamp:       timestamp,
 		LatencyMs:       record.Latency.Milliseconds(),
@@ -102,7 +97,6 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Tokens:          tokens,
 		Failed:          failed,
 		Generate:        coreusage.GenerateEnabled(record.Generate),
-		Stream:          stream,
 		Fail:            fail,
 		ResponseHeaders: record.ResponseHeaders,
 	}
@@ -159,7 +153,6 @@ type requestDetail struct {
 	Tokens          tokenStats  `json:"tokens"`
 	Failed          bool        `json:"failed"`
 	Generate        bool        `json:"generate"`
-	Stream          bool        `json:"stream"`
 	Fail            failDetail  `json:"fail"`
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
 }

@@ -87,11 +87,8 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 				return true
 			}
 			originalRole := roleResult.String()
-			var precedingToolUseIDs []string
-			if originalRole != "system" {
-				precedingToolUseIDs = pendingToolUseIDs
-				pendingToolUseIDs = nil
-			}
+			precedingToolUseIDs := pendingToolUseIDs
+			pendingToolUseIDs = nil
 			role := originalRole
 			if role == "assistant" {
 				role = "model"
@@ -232,7 +229,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 				}
 			}
 		}
-		out = translatorcommon.SetRawArrayItems(out, "contents", translatorcommon.MergeAdjacentGeminiContents(contentItems))
+		out = translatorcommon.SetRawArrayItems(out, "contents", contentItems)
 	}
 
 	// tools

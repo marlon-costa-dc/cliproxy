@@ -62,7 +62,12 @@ func (h *Handler) GetModelInventory(c *gin.Context) {
 	if projection != nil {
 		inventory.DirectModels = projectedInventoryModels(projection, registered, auths, now)
 		inventory.Aliases = projectedInventoryAliases(projection)
-	} else {
+	}
+	// The activated view of the active providers is the authority this surface
+	// serves (the model pipeline reads it as its cycle source): a published
+	// projection that carries no direct models — live or stale — must never
+	// shadow it, so fall back to the runtime registry's bootstrap view.
+	if len(inventory.DirectModels) == 0 {
 		models, errBootstrap := bootstrapInventoryModels(registered, auths, now)
 		if errBootstrap != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("build model inventory: %v", errBootstrap)})
@@ -232,13 +237,21 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 				return nil, fmt.Errorf("registered route %d has no matching credential", routeIndex)
 			}
 			if auth.QuotaDomain == "" || strings.TrimSpace(auth.QuotaDomain) != auth.QuotaDomain || auth.QuotaDomain == "unknown" {
-				return nil, fmt.Errorf("registered route %d has no canonical quota domain", routeIndex)
+				return nil, fmt.Errorf("registered route %d has no canonical quota domain (client=%q provider=%q authID=%q quotaDomain=%q channel=%q model=%q)", routeIndex, registeredRoute.ClientID, auth.Provider, auth.ID, auth.QuotaDomain, registeredRoute.RouteChannel, registeredRoute.RuntimeModelID)
 			}
 			if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 				return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)
 			}
 			routeIndexExisting, exists := built.routes[routeID]
 			if !exists {
+				// The channel's wire protocol is a fact of the route: a claude
+				// channel route speaks Anthropic Messages regardless of any
+				// catalog declaration, and a published projection may not
+				// carry empty protocols.
+				protocols := append([]string(nil), registeredRoute.Model.Protocols...)
+				if len(protocols) == 0 && routeChannel == "claude" {
+					protocols = []string{"anthropic_messages"}
+				}
 				route := modelrouting.InventoryRoute{
 					RouteKey: modelrouting.RouteKeyJSON{
 						ModelKey: modelKey, RouteChannel: routeChannel,
@@ -255,7 +268,7 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 						},
 						registeredRoute.RuntimeModelID,
 					),
-					Protocols:       []string{},
+					Protocols:       protocols,
 					Restrictions:    []modelrouting.InventoryRestriction{},
 					Credentials:     []modelrouting.InventoryCredential{},
 					SelectionReason: "route surfaced from its channel without catalog declaration",
@@ -279,7 +292,7 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 			return nil, fmt.Errorf("registered route %d has no matching credential", routeIndex)
 		}
 		if auth.QuotaDomain == "" || strings.TrimSpace(auth.QuotaDomain) != auth.QuotaDomain || auth.QuotaDomain == "unknown" {
-			return nil, fmt.Errorf("registered route %d has no canonical quota domain", routeIndex)
+			return nil, fmt.Errorf("registered route %d has no canonical quota domain (client=%q provider=%q authID=%q quotaDomain=%q channel=%q model=%q)", routeIndex, registeredRoute.ClientID, auth.Provider, auth.ID, auth.QuotaDomain, registeredRoute.RouteChannel, registeredRoute.RuntimeModelID)
 		}
 		if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 			return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)
@@ -394,7 +407,7 @@ func inventoryCredential(route registry.RegisteredRouteSnapshot, auth *coreauth.
 	suspended := strings.TrimSpace(route.SuspensionReason) != ""
 	suspensionReason := optionalTrimmed(route.SuspensionReason)
 	quotaBlocked := route.QuotaBlocked
-	var quotaReason, remaining, resetsAt *string
+	var quotaReason, remaining, resetsAt, resumesAt *string
 	observedAt := route.LastUpdated
 	selectable := auth != nil
 	status := "unknown"
@@ -403,40 +416,39 @@ func inventoryCredential(route registry.RegisteredRouteSnapshot, auth *coreauth.
 		if auth.UpdatedAt.After(observedAt) {
 			observedAt = auth.UpdatedAt
 		}
-		if auth.Disabled || auth.Status == coreauth.StatusDisabled {
-			suspended = true
-			if suspensionReason == nil {
-				suspensionReason = optionalTrimmed(auth.StatusMessage)
-			}
-		}
+		// Availability follows request-time selection, so a cooldown or quota
+		// window ends at its recovery instant instead of at the next success.
+		availability := coreauth.AvailabilityForModel(auth, route.RuntimeModelID, now)
 		quota := auth.Quota
+		statusMessage := auth.StatusMessage
 		if modelState := auth.ModelStates[route.RuntimeModelID]; modelState != nil {
 			quota = modelState.Quota
-			if modelState.Unavailable || modelState.Status == coreauth.StatusDisabled {
-				suspended = true
-				if suspensionReason == nil {
-					suspensionReason = optionalTrimmed(modelState.StatusMessage)
-				}
+			if !auth.Disabled && auth.Status != coreauth.StatusDisabled {
+				statusMessage = modelState.StatusMessage
 			}
 		}
-		if quota.Exceeded {
-			quotaBlocked = true
+		quotaBlocked = availability.QuotaCooldown
+		if quotaBlocked {
 			quotaReason = optionalTrimmed(quota.Reason)
-			if !quota.NextRecoverAt.IsZero() {
-				value := quota.NextRecoverAt.UTC().Format(time.RFC3339Nano)
-				resetsAt = &value
+			resetsAt = optionalInstant(availability.RecoverAt)
+		}
+		if availability.Blocked && !availability.QuotaCooldown {
+			if suspensionReason == nil {
+				suspensionReason = optionalTrimmed(statusMessage)
 			}
+			if !suspended {
+				resumesAt = optionalInstant(availability.RecoverAt)
+			}
+			suspended = true
 		}
 		if value := strings.TrimSpace(quota.Signals["remaining"]); value != "" {
 			remaining = &value
 		}
-		selectable = selectable && auth.Status == coreauth.StatusActive && !auth.Unavailable && !suspended && !quotaBlocked
+		selectable = !availability.Blocked && !suspended
 		status = boolStatus(selectable, "healthy", "blocked")
 		quotaStatus = boolStatus(quotaBlocked, "blocked", "available")
-	}
-	if route.QuotaResetsAt != nil && resetsAt == nil {
-		value := route.QuotaResetsAt.UTC().Format(time.RFC3339Nano)
-		resetsAt = &value
+	} else if route.QuotaResetsAt != nil {
+		resetsAt = optionalInstant(*route.QuotaResetsAt)
 	}
 	if observedAt.IsZero() {
 		observedAt = now
@@ -451,7 +463,7 @@ func inventoryCredential(route registry.RegisteredRouteSnapshot, auth *coreauth.
 			Status: quotaStatus, Remaining: remaining, ResetsAt: resetsAt, Reason: quotaReason,
 		},
 		Suspension: modelrouting.InventorySuspension{
-			Active: suspended, Reason: suspensionReason, ResumesAt: nil,
+			Active: suspended, Reason: suspensionReason, ResumesAt: resumesAt,
 		},
 		Restrictions: []modelrouting.InventoryRestriction{},
 	}
@@ -573,6 +585,14 @@ func optionalTrimmed(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func optionalInstant(value time.Time) *string {
+	if value.IsZero() {
+		return nil
+	}
+	formatted := value.UTC().Format(time.RFC3339Nano)
+	return &formatted
 }
 
 func cloneOptionalString(value *string) *string {

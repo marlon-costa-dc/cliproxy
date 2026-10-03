@@ -411,6 +411,12 @@ type ClaudeKey struct {
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// QuotaDomain identifies the quota pool for this exact credential, the
+	// same explicit fact OpenAI-compatible credentials declare. Empty entries
+	// are rejected by the model inventory: every registered route must report
+	// one canonical quota domain.
+	QuotaDomain string `yaml:"quota-domain,omitempty" json:"quota-domain,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
@@ -491,6 +497,22 @@ type ClaudeModel struct {
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
 
+	// CatalogProviderID, CatalogModelID, CatalogRouteProviderID, and
+	// CatalogRouteModelID declare the explicit models.dev identity this route
+	// participates in the model inventory with — the same declaration
+	// openai-compatibility models carry. All four facts must be present for
+	// the route to resolve in the inventory; omitted facts surface the route
+	// under its channel identity without a catalog entry.
+	CatalogProviderID    string `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
+	CatalogModelID       string `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
+	CatalogRouteProviderID string `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
+	CatalogRouteModelID  string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
+
+	// Protocols declares the exact wire protocols implemented by this route.
+	// The model routing bootstrap refuses registered routes without explicit
+	// protocols, so declared models must name at least one.
+	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 
@@ -516,6 +538,26 @@ func (m ClaudeModel) GetAlias() string { return m.Alias }
 func (m ClaudeModel) GetDisplayName() string   { return m.DisplayName }
 func (m ClaudeModel) GetMaxContextLength() int { return m.MaxContextLength }
 func (m ClaudeModel) GetForceMapping() bool    { return m.ForceMapping }
+
+func (m ClaudeModel) GetCatalogProviderID() string {
+	return m.CatalogProviderID
+}
+
+func (m ClaudeModel) GetCatalogModelID() string {
+	return m.CatalogModelID
+}
+
+func (m ClaudeModel) GetCatalogRouteProviderID() string {
+	return m.CatalogRouteProviderID
+}
+
+func (m ClaudeModel) GetCatalogRouteModelID() string {
+	return m.CatalogRouteModelID
+}
+
+func (m ClaudeModel) GetProtocols() []string {
+	return m.Protocols
+}
 func (m ClaudeModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
@@ -803,12 +845,14 @@ type OpenAICompatibilityModel struct {
 	CatalogRouteProviderID string `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
 	CatalogRouteModelID    string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
 
+	// Protocols declares the exact wire protocols implemented by this route.
+	// The model routing bootstrap refuses registered routes without explicit
+	// protocols, so declared models must name at least one.
+	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+
 	// VariantID marks an explicitly proven model-owned variant. An empty value
 	// means the configured route serves the canonical model directly.
 	VariantID string `yaml:"variant-id,omitempty" json:"variant-id,omitempty"`
-
-	// Protocols declares the exact wire protocols implemented by this route.
-	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
 
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
@@ -839,6 +883,22 @@ type OpenAICompatibilityModel struct {
 }
 
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }
+
+func (m OpenAICompatibilityModel) GetCatalogProviderID() string {
+	return m.CatalogProviderID
+}
+
+func (m OpenAICompatibilityModel) GetCatalogModelID() string {
+	return m.CatalogModelID
+}
+
+func (m OpenAICompatibilityModel) GetCatalogRouteProviderID() string {
+	return m.CatalogRouteProviderID
+}
+
+func (m OpenAICompatibilityModel) GetCatalogRouteModelID() string {
+	return m.CatalogRouteModelID
+}
 
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 

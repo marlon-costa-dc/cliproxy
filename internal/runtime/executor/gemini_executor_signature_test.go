@@ -473,13 +473,9 @@ func TestGeminiVertexExecutorCountTokens_GeminiPayload_SanitizesClaudeCAISSignat
 
 	req, opts := geminiRequestWithThinkingSignature(testClaudeCAISSample)
 
-	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-	_, err := executor.CountTokens(ctx, auth, req, opts)
+	_, err := executor.CountTokens(context.Background(), auth, req, opts)
 	if err != nil {
 		t.Fatalf("CountTokens() error = %v", err)
-	}
-	if !cliproxyexecutor.UpstreamAttempted(ctx) {
-		t.Fatal("CountTokens() did not mark the HTTP request as an upstream attempt")
 	}
 
 	if bytes.Contains(upstreamBody, []byte(testClaudeCAISSample)) {

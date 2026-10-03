@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"golang.org/x/net/context"
@@ -182,7 +180,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	if host == nil {
 		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("plugin executor host is unavailable")}
 	}
-	execCtx, nestedTracker := withNestedExecutionTracker(coreusage.WithStream(ctx, false))
+	execCtx, nestedTracker := withNestedExecutionTracker(ctx)
 	req, opts := h.pluginExecutorRequest(execCtx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, false, execOptions)
 	lifecycle := h.newRequestLifecycleTracker(execCtx, entryProtocol, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
 	var interceptErr *interfaces.ErrorMessage
@@ -335,29 +333,6 @@ func executionErrorMessage(err error) *interfaces.ErrorMessage {
 	status := http.StatusInternalServerError
 	if code := clienterror.HTTPStatusFromError(err); code > 0 {
 		status = code
-	}
-	type directResponseError interface {
-		DirectResponse() bool
-		ResponseBody() []byte
-	}
-	var direct directResponseError
-	if errors.As(err, &direct) && direct != nil && direct.DirectResponse() {
-		body := direct.ResponseBody()
-		var headers http.Header
-		if len(body) > 0 {
-			contentType := http.DetectContentType(body)
-			if json.Valid(body) {
-				contentType = "application/json"
-			}
-			headers = http.Header{"Content-Type": []string{contentType}}
-		}
-		return &interfaces.ErrorMessage{
-			StatusCode:     status,
-			Error:          err,
-			DirectResponse: true,
-			Body:           body,
-			Headers:        headers,
-		}
 	}
 	var addon http.Header
 	if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {

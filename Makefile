@@ -20,7 +20,7 @@ gen: ## regenerate declared sources and prove the module graph is unchanged
 	@go mod tidy
 	@git diff --exit-code -- go.mod go.sum
 
-fmt: ## report unformatted sources; APPLY=Y rewrites them
+fmt: ## report unformatted sources; rewrites them
 	@if [ "$(APPLY)" = "Y" ]; then gofmt -w .; else unformatted=$$(gofmt -l .); if [ -n "$$unformatted" ]; then printf 'ERROR: unformatted sources:\n%s\n' "$$unformatted" >&2; exit 1; fi; fi
 
 fix: ## report vet findings; go vet has no autofixer, so APPLY changes nothing

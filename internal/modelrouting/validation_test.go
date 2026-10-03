@@ -28,7 +28,7 @@ func validConfig() Config {
 		},
 	}
 	cfg := Config{
-		SchemaVersion:    2,
+		SchemaVersion:    SchemaVersion,
 		Generation:       42,
 		SnapshotDigest:   testDigest,
 		ProjectionDigest: testDigest,
@@ -73,7 +73,7 @@ func validConfig() Config {
 		}},
 		FailurePolicy: FailurePolicy{
 			Mode: "classified_candidate_failover", CredentialAcquisitionTimeoutSeconds: 30,
-			AutomaticRetry: false, AutomaticFailover: true, MaxCandidateAttempts: 2,
+			AutomaticRetry: false, AutomaticFailover: true,
 			FailoverRules: []FailoverRule{{
 				RuleID: "transient", HTTPStatuses: []int{429, 503}, ErrorCodes: []string{"overloaded"},
 				FailureKinds: []FailureKind{FailureKindCredential, FailureKindTransport},
@@ -106,16 +106,76 @@ func TestValidateAcceptsLosslessRouteProjection(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsModelAssignedToTwoTiers(t *testing.T) {
+func TestValidateRejectsUnsupportedSchemaVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		version int
+	}{
+		{name: "legacy v2", version: SchemaVersion - 1},
+		{name: "unknown future", version: SchemaVersion + 1},
+		{name: "zero", version: 0},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfig()
+			cfg.SchemaVersion = test.version
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "model-routing.schema-version") {
+				t.Fatalf("Validate() error = %v, want schema-version failure", err)
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsModelInIndependentLanes(t *testing.T) {
 	t.Parallel()
 	cfg := validConfig()
-	other := cfg.Aliases[0]
-	other.Name = "aihub-deep"
-	other.TierID = "deep"
-	cfg.Aliases = append(cfg.Aliases, other)
+	for _, lane := range []string{"balanced", "fast", "frontier", "most-capable"} {
+		other := cfg.Aliases[0]
+		other.Name = "ai-hub-" + lane
+		other.TierID = lane
+		cfg.Aliases = append(cfg.Aliases, other)
+	}
 	refreshProjectionDigest(t, &cfg)
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "assigned to tiers") {
-		t.Fatalf("Validate() error = %v, want exclusive-tier failure", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want independent lanes sharing one ModelKey", err)
+	}
+}
+
+func TestValidateRejectsDuplicateMemberWithinLane(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	duplicate := cfg.Aliases[0].Members[0]
+	duplicate.MemberRank = 2
+	cfg.Aliases[0].Members = append(cfg.Aliases[0].Members, duplicate)
+	refreshProjectionDigest(t, &cfg)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate member in tier") {
+		t.Fatalf("Validate() error = %v, want duplicate member failure", err)
+	}
+}
+
+func TestUnmarshalV3RejectsRetiredAttemptCeiling(t *testing.T) {
+	t.Parallel()
+	source := validConfig()
+	payload, err := yaml.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Config
+	if err = yaml.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal() without attempt ceiling: %v", err)
+	}
+	if err = decoded.Validate(); err != nil {
+		t.Fatalf("Validate() after native serialization: %v", err)
+	}
+	if strings.Contains(string(SchemaJSON()), "max-candidate-attempts") {
+		t.Fatal("v3 schema contains the retired attempt ceiling")
+	}
+	withCeiling := strings.Replace(string(payload), "failure-policy:\n", "failure-policy:\n    max-candidate-attempts: 2\n", 1)
+	if err = yaml.Unmarshal([]byte(withCeiling), &decoded); err == nil || !strings.Contains(err.Error(), "max-candidate-attempts: unknown field") {
+		t.Fatalf("Unmarshal() error = %v, want retired field rejection", err)
 	}
 }
 
@@ -130,7 +190,6 @@ func TestValidateRejectsInvalidClassifiedFailoverPolicy(t *testing.T) {
 		{name: "timeout", mutate: func(policy *FailurePolicy) { policy.CredentialAcquisitionTimeoutSeconds = 0 }, want: "credential-acquisition-timeout-seconds"},
 		{name: "automatic retry", mutate: func(policy *FailurePolicy) { policy.AutomaticRetry = true }, want: "automatic-retry"},
 		{name: "automatic failover", mutate: func(policy *FailurePolicy) { policy.AutomaticFailover = false }, want: "automatic-failover"},
-		{name: "candidate attempts", mutate: func(policy *FailurePolicy) { policy.MaxCandidateAttempts = 1 }, want: "max-candidate-attempts"},
 		{name: "missing rules", mutate: func(policy *FailurePolicy) { policy.FailoverRules = nil }, want: "failover-rules"},
 		{name: "stale result", mutate: func(policy *FailurePolicy) { policy.ServeStaleOnError = true }, want: "serve-stale-on-error"},
 		{name: "replace first error", mutate: func(policy *FailurePolicy) { policy.PreserveFirstError = false }, want: "preserve-first-error"},
@@ -193,7 +252,7 @@ func TestValidateRejectsVariantSerializedAsModel(t *testing.T) {
 func TestUnmarshalRejectsUnknownProjectionField(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nunknown: true\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 3\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nunknown: true\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want unknown-field failure", err)
 	}
@@ -202,7 +261,7 @@ func TestUnmarshalRejectsUnknownProjectionField(t *testing.T) {
 func TestUnmarshalRejectsRemovedRetryPolicy(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nretry-policy: {}\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 3\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nretry-policy: {}\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "retry-policy: unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want removed retry-policy rejection", err)
 	}
@@ -211,8 +270,43 @@ func TestUnmarshalRejectsRemovedRetryPolicy(t *testing.T) {
 func TestUnmarshalRejectsRemovedRequestTimeout(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  request-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 3\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  request-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "request-timeout-seconds: unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want removed request timeout rejection", err)
+	}
+}
+
+func TestEmptyDirectModelsProjectionIsValid(t *testing.T) {
+	t.Parallel()
+	// ADR-0023: a fleet-wide empty projection (every lane empty with
+	// selectable=false) is a publishable state; execution answers 503
+	// route_not_selectable instead of invalidating the whole generation.
+	cfg := Config{
+		SchemaVersion:    SchemaVersion,
+		Generation:       8,
+		SnapshotDigest:   testDigest,
+		ProjectionDigest: testDigest,
+		DirectModels:     []DirectModel{},
+		Aliases: []Alias{{
+			Name: "aihub-balanced", TierID: "balanced", Selectable: false,
+			Reason: "no healthy eligible model is available in this lane",
+		}},
+		FailurePolicy: FailurePolicy{
+			Mode: "classified_candidate_failover", CredentialAcquisitionTimeoutSeconds: 30,
+			AutomaticRetry: false, AutomaticFailover: true,
+			FailoverRules: []FailoverRule{{
+				RuleID: "transient", HTTPStatuses: []int{429, 503}, ErrorCodes: []string{"overloaded"},
+				FailureKinds: []FailureKind{FailureKindCredential, FailureKindTransport},
+			}}, ServeStaleOnError: false,
+			PreserveFirstError: true, TerminateOwnedRequestOnCancel: true,
+		},
+	}
+	digest, err := ProjectionDigest(&cfg)
+	if err != nil {
+		t.Fatalf("ProjectionDigest() error = %v", err)
+	}
+	cfg.ProjectionDigest = digest
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want empty direct-models projection to be valid", err)
 	}
 }
