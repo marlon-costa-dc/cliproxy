@@ -503,10 +503,10 @@ type ClaudeModel struct {
 	// openai-compatibility models carry. All four facts must be present for
 	// the route to resolve in the inventory; omitted facts surface the route
 	// under its channel identity without a catalog entry.
-	CatalogProviderID    string `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
-	CatalogModelID       string `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
+	CatalogProviderID      string `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
+	CatalogModelID         string `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
 	CatalogRouteProviderID string `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
-	CatalogRouteModelID  string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
+	CatalogRouteModelID    string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
 
 	// Protocols declares the exact wire protocols implemented by this route.
 	// The model routing bootstrap refuses registered routes without explicit
@@ -558,7 +558,7 @@ func (m ClaudeModel) GetCatalogRouteModelID() string {
 func (m ClaudeModel) GetProtocols() []string {
 	return m.Protocols
 }
-func (m ClaudeModel) GetIsCompat() bool        { return m.IsCompat }
+func (m ClaudeModel) GetIsCompat() bool { return m.IsCompat }
 
 func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
