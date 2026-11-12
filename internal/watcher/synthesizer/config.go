@@ -66,6 +66,7 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	// Vertex-compat
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
 
+	applyDefaultQuotaDomain(out)
 	return out, nil
 }
 

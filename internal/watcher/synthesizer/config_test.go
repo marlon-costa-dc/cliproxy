@@ -1344,3 +1344,38 @@ func TestConfigSynthesizer_RequestScopedErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigSynthesizer_QuotaDomainDefaultsToProvider(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenCodeKey:   []config.OpenCodeKey{{APIKey: "opencode-key-123"}},
+			OpenCodeGoKey: []config.OpenCodeGoKey{{APIKey: "opencode-go-key-456"}},
+			ClaudeKey:     []config.ClaudeKey{{APIKey: "claude-key-789", QuotaDomain: "declared-pool"}},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]string{
+		"opencode":    "opencode",
+		"opencode-go": "opencode-go",
+		"claude":      "declared-pool",
+	}
+	if len(auths) != len(want) {
+		t.Fatalf("expected %d auths, got %d", len(want), len(auths))
+	}
+	for _, auth := range auths {
+		expected, ok := want[auth.Provider]
+		if !ok {
+			t.Fatalf("unexpected provider %q", auth.Provider)
+		}
+		if auth.QuotaDomain != expected {
+			t.Errorf("provider %s: expected quota domain %q, got %q", auth.Provider, expected, auth.QuotaDomain)
+		}
+	}
+}
