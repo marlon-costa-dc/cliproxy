@@ -321,6 +321,13 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 		if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 			return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)
 		}
+		if len(facts.protocols) == 0 {
+			// Model routing executes a route through a wire protocol; a route
+			// whose model declares none (for example an OpenCode gateway model
+			// served natively over Gemini) stays directly addressable but is
+			// not a model-routing candidate, so the routing inventory omits it.
+			continue
+		}
 		modelKey := modelKeyJSON(facts.routeKey.ModelKey)
 		modelID := modelKey.CatalogProviderID + "\x00" + modelKey.CanonicalModelID
 		built := models[modelID]
