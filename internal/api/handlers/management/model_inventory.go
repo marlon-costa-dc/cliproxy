@@ -267,6 +267,14 @@ func bootstrapFactsForRoute(route registry.RegisteredRouteSnapshot, routeIndex i
 		return bootstrapRouteFacts{}, fmt.Errorf("registered route %d contains a managed alias before projection", routeIndex)
 	}
 	if route.Model != nil && route.CatalogDeclarationOf() == registry.CatalogDeclarationNone {
+		// The channel's wire protocol is a fact of the route: a claude channel
+		// route speaks Anthropic Messages regardless of any catalog
+		// declaration, and a published projection may not carry empty
+		// protocols.
+		protocols := append([]string(nil), route.Model.Protocols...)
+		if len(protocols) == 0 && route.RouteChannel == "claude" {
+			protocols = []string{"anthropic_messages"}
+		}
 		return bootstrapRouteFacts{
 			routeKey: modelrouting.RouteKey{
 				ModelKey:     modelrouting.ModelKey{CatalogProviderID: route.RouteChannel, CanonicalModelID: route.RuntimeModelID},
@@ -275,7 +283,7 @@ func bootstrapFactsForRoute(route registry.RegisteredRouteSnapshot, routeIndex i
 			displayName:            route.Model.DisplayName,
 			catalogRouteProviderID: route.RouteChannel,
 			catalogRouteModelID:    route.RuntimeModelID,
-			protocols:              []string{},
+			protocols:              protocols,
 			selectionReason:        "route surfaced from its channel without catalog declaration",
 		}, nil
 	}
@@ -306,7 +314,7 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 			return nil, fmt.Errorf("registered route %d has no matching credential", routeIndex)
 		}
 		if auth.QuotaDomain == "" || strings.TrimSpace(auth.QuotaDomain) != auth.QuotaDomain || auth.QuotaDomain == "unknown" {
-			return nil, fmt.Errorf("registered route %d has no canonical quota domain", routeIndex)
+			return nil, fmt.Errorf("registered route %d has no canonical quota domain (client=%q provider=%q authID=%q quotaDomain=%q channel=%q model=%q)", routeIndex, registeredRoute.ClientID, auth.Provider, auth.ID, auth.QuotaDomain, registeredRoute.RouteChannel, registeredRoute.RuntimeModelID)
 		}
 		if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 			return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)

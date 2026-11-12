@@ -656,3 +656,27 @@ func TestMergeRegistryRoutesKeepsVariantsOfJoiningRoutes(t *testing.T) {
 		t.Fatalf("merged model = %+v, want one model with both routes and both variants", merged)
 	}
 }
+
+// An undeclared route keeps the wire protocol its channel owns: a claude
+// channel route speaks Anthropic Messages, and a route that registered its own
+// protocols keeps them.
+func TestBootstrapInventoryKeepsChannelProtocolsForUndeclaredRoutes(t *testing.T) {
+	auths := map[string]*coreauth.Auth{"credential-a": {
+		ID: "credential-a", Provider: "anthropic", RouteChannel: "claude", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "api_key"},
+	}}
+	models, err := bootstrapInventoryModels([]registry.RegisteredRouteSnapshot{
+		{ClientID: "credential-a", RouteChannel: "claude", RuntimeModelID: "glm-5.3", Model: &registry.ModelInfo{ID: "glm-5.3"}},
+		{ClientID: "credential-a", RouteChannel: "opencode", RuntimeModelID: "later-model", Model: &registry.ModelInfo{ID: "later-model", Protocols: []string{"openai_chat"}}},
+	}, auths, time.Now())
+	if err != nil || len(models) != 2 {
+		t.Fatalf("bootstrapInventoryModels() = %d models, error %v; want 2, nil", len(models), err)
+	}
+	protocols := map[string][]string{}
+	for _, model := range models {
+		protocols[model.Routes[0].RouteKey.RouteChannel] = model.Routes[0].Protocols
+	}
+	if !equalStrings(protocols["claude"], []string{"anthropic_messages"}) || !equalStrings(protocols["opencode"], []string{"openai_chat"}) {
+		t.Fatalf("undeclared route protocols = %v, want claude anthropic_messages and opencode openai_chat", protocols)
+	}
+}
