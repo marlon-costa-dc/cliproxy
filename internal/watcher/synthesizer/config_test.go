@@ -1366,16 +1366,24 @@ func TestConfigSynthesizer_QuotaDomainDefaultsToProvider(t *testing.T) {
 		"opencode-go": "opencode-go",
 		"claude":      "declared-pool",
 	}
-	if len(auths) != len(want) {
-		t.Fatalf("expected %d auths, got %d", len(want), len(auths))
-	}
+	got := make(map[string]string, len(auths))
 	for _, auth := range auths {
-		expected, ok := want[auth.Provider]
+		if _, duplicate := got[auth.Provider]; duplicate {
+			t.Fatalf("provider %q synthesized more than once", auth.Provider)
+		}
+		got[auth.Provider] = auth.QuotaDomain
+	}
+	for provider, expected := range want {
+		quotaDomain, ok := got[provider]
 		if !ok {
-			t.Fatalf("unexpected provider %q", auth.Provider)
+			t.Errorf("provider %s: not synthesized", provider)
+			continue
 		}
-		if auth.QuotaDomain != expected {
-			t.Errorf("provider %s: expected quota domain %q, got %q", auth.Provider, expected, auth.QuotaDomain)
+		if quotaDomain != expected {
+			t.Errorf("provider %s: expected quota domain %q, got %q", provider, expected, quotaDomain)
 		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("expected providers %v, got %v", want, got)
 	}
 }
