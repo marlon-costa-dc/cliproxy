@@ -5,6 +5,8 @@ package registry
 import (
 	"sort"
 	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 )
 
 const (
@@ -942,16 +944,43 @@ func GetZAIModels() []*ModelInfo {
 // embedded table is the source of truth for the listing. When a refreshed
 // catalog still carries richer OpenCode entries, those are preferred.
 func GetOpenCodeModels(gateway string) []*ModelInfo {
+	key := "zen"
+	models := getModels().OpenCode
 	if strings.EqualFold(gateway, "go") {
-		if m := getModels().OpenCodeGo; len(m) > 0 {
-			return cloneModelInfos(m)
-		}
-		return openCodeModelsFromRoutes("go")
+		key = "go"
+		models = getModels().OpenCodeGo
 	}
-	if m := getModels().OpenCode; len(m) > 0 {
-		return cloneModelInfos(m)
+	var out []*ModelInfo
+	if len(models) > 0 {
+		out = cloneModelInfos(models)
+	} else {
+		out = openCodeModelsFromRoutes(key)
 	}
-	return openCodeModelsFromRoutes("zen")
+	for _, info := range out {
+		declareOpenCodeProtocols(key, info)
+	}
+	return out
+}
+
+// openCodeWireProtocols maps the gateway route-table protocol segment to the
+// wire protocol the OpenCode executor speaks for it.
+var openCodeWireProtocols = map[string]string{
+	"messages":  modelrouting.ProtocolAnthropicMessages,
+	"responses": modelrouting.ProtocolOpenAIResponses,
+	"chat":      modelrouting.ProtocolOpenAIChat,
+}
+
+// declareOpenCodeProtocols records the wire protocol the executor resolves for
+// the model (ResolveOpenCodeProtocol), so its route is executable in the model
+// routing inventory. A model whose gateway segment has no wire protocol keeps
+// none and is never offered as a routable candidate.
+func declareOpenCodeProtocols(gateway string, info *ModelInfo) {
+	if info == nil || len(info.Protocols) > 0 {
+		return
+	}
+	if protocol, ok := openCodeWireProtocols[ResolveOpenCodeProtocol(gateway, info.ID)]; ok {
+		info.Protocols = []string{protocol}
+	}
 }
 
 // openCodeRoutesModelInfo builds a ModelInfo from an embedded OpenCode route-table
