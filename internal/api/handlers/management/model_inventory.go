@@ -59,26 +59,58 @@ func (h *Handler) GetModelInventory(c *gin.Context) {
 		RoutingSchema: modelrouting.RoutingSchemaInfo{Version: modelrouting.SchemaVersion, Digest: modelrouting.SchemaDigest()},
 		Aliases:       []modelrouting.InventoryAlias{},
 	}
+	// The activated view of the active providers is the authority this surface
+	// serves (the model pipeline reads it as its cycle source). The published
+	// projection only describes routes the pipeline already knew, so it is laid
+	// over the registry view and never replaces it.
+	registryModels, errRegistry := bootstrapInventoryModels(registered, auths, now)
+	if errRegistry != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("build model inventory: %v", errRegistry)})
+		return
+	}
+	inventory.DirectModels = registryModels
 	if projection != nil {
-		inventory.DirectModels = projectedInventoryModels(projection, registered, auths, now)
+		inventory.DirectModels = mergeRegistryRoutes(projectedInventoryModels(projection, registered, auths, now), registryModels)
 		inventory.Aliases = projectedInventoryAliases(projection)
 	}
-	// The activated view of the active providers is the authority this surface
-	// serves (the model pipeline reads it as its cycle source): a published
-	// projection that carries no direct models — live or stale — must never
-	// shadow it, so fall back to the runtime registry's bootstrap view.
-	if len(inventory.DirectModels) == 0 {
-		models, errBootstrap := bootstrapInventoryModels(registered, auths, now)
-		if errBootstrap != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("build model inventory: %v", errBootstrap)})
-			return
-		}
-		inventory.DirectModels = models
-	}
-	if inventory.DirectModels == nil {
-		inventory.DirectModels = []modelrouting.InventoryModel{}
-	}
 	c.JSON(http.StatusOK, inventory)
+}
+
+// mergeRegistryRoutes adds every registered route the projection does not
+// describe. Without it the inventory would only echo the previous publication,
+// and a provider activated after the first one could never reach the pipeline.
+func mergeRegistryRoutes(projected, registryModels []modelrouting.InventoryModel) []modelrouting.InventoryModel {
+	merged := append(make([]modelrouting.InventoryModel, 0, len(projected)+len(registryModels)), projected...)
+	byKey := make(map[modelrouting.ModelKeyJSON]int, len(merged))
+	described := make(map[string]struct{})
+	for index, model := range merged {
+		byKey[model.ModelKey] = index
+		for _, route := range model.Routes {
+			described[route.RouteKey.RouteChannel+"\x00"+route.RuntimeModelID] = struct{}{}
+		}
+	}
+	for _, model := range registryModels {
+		routes := make([]modelrouting.InventoryRoute, 0, len(model.Routes))
+		active := false
+		for _, route := range model.Routes {
+			if _, exists := described[route.RouteKey.RouteChannel+"\x00"+route.RuntimeModelID]; !exists {
+				routes = append(routes, route)
+				active = active || route.Selectable
+			}
+		}
+		if len(routes) == 0 {
+			continue
+		}
+		if index, exists := byKey[model.ModelKey]; exists {
+			merged[index].Routes = append(merged[index].Routes, routes...)
+			merged[index].Active = merged[index].Active || active
+			continue
+		}
+		model.Routes, model.Active = routes, active
+		byKey[model.ModelKey] = len(merged)
+		merged = append(merged, model)
+	}
+	return merged
 }
 
 func projectedInventoryModels(projection *modelrouting.Config, registered []registry.RegisteredRouteSnapshot, auths map[string]*coreauth.Auth, now time.Time) []modelrouting.InventoryModel {
