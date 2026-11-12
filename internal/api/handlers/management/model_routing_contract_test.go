@@ -562,42 +562,97 @@ func TestBootstrapInventorySurfacesRoutesThatCannotDeclareCatalogFacts(t *testin
 }
 
 // A provider activated after the first publication is registered but absent
-// from the projection; the inventory must still carry it, or the pipeline that
-// reads this surface can never select it.
-func TestInventoryKeepsRegisteredRoutesTheProjectionDoesNotDescribe(t *testing.T) {
-	projection := managementRoutingProjection()
-	auths := map[string]*coreauth.Auth{
-		"credential-a": {
+// from the projection; the inventory endpoint must still report it, or the
+// pipeline that reads this surface can never select it.
+func TestModelInventoryReportsRegisteredRoutesTheProjectionDoesNotDescribe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	manager := coreauth.NewManager(nil, nil, nil)
+	reg := registry.GetGlobalRegistry()
+	for _, auth := range []*coreauth.Auth{
+		{
 			ID: "credential-a", Provider: "openai", RouteChannel: "openai", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
 			Attributes: map[string]string{"auth_kind": "oauth", "quota_domain": "quota-a"},
 		},
-		"credential-b": {
-			ID: "credential-b", Provider: "opencode", RouteChannel: "opencode", QuotaDomain: "quota-b", Status: coreauth.StatusActive,
-			Attributes: map[string]string{"auth_kind": "api_key"},
+		{
+			ID: "credential-later", Provider: "opencode", RouteChannel: "opencode", QuotaDomain: "quota-later", Status: coreauth.StatusActive,
+			Attributes: map[string]string{"auth_kind": "api_key", "quota_domain": "quota-later"},
 		},
+	} {
+		if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+		}
 	}
-	registered := []registry.RegisteredRouteSnapshot{
-		{ClientID: "credential-a", RouteChannel: "openai", RuntimeModelID: "gpt-5.4", Model: &registry.ModelInfo{ID: "gpt-5.4"}},
-		{ClientID: "credential-b", RouteChannel: "opencode", RuntimeModelID: "later-model", Model: &registry.ModelInfo{ID: "later-model"}},
+	reg.RegisterClient("credential-a", "openai", []*registry.ModelInfo{{ID: "gpt-5.4"}})
+	reg.RegisterClient("credential-later", "opencode", []*registry.ModelInfo{
+		{ID: "later-model", VariantID: "high", Protocols: []string{"openai_chat"},
+			CatalogProviderID: "opencode", CatalogModelID: "later-model",
+			CatalogRouteProviderID: "opencode", CatalogRouteModelID: "later-model"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("credential-a")
+		reg.UnregisterClient("credential-later")
+	})
+
+	loadedAt := time.Date(2026, 8, 27, 18, 45, 0, 0, time.UTC)
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, manager)
+	h.SetModelRoutingStateHook(func() modelrouting.ActiveStateV2 {
+		return modelrouting.ActiveStateV2{
+			Identity: &modelrouting.ActiveIdentityV2{Generation: 1},
+			LoadedAt: &loadedAt, Projection: managementRoutingProjection(),
+		}
+	})
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/model-inventory", nil)
+	h.GetModelInventory(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GetModelInventory() status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	now := time.Now()
-	registryModels, err := bootstrapInventoryModels(registered, auths, now)
-	if err != nil {
-		t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+	var inventory modelrouting.Inventory
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &inventory); errDecode != nil {
+		t.Fatalf("decode inventory: %v", errDecode)
 	}
-	projected := projectedInventoryModels(projection, registered, auths, now)
+	routes := map[string]modelrouting.InventoryModel{}
+	for _, model := range inventory.DirectModels {
+		for _, route := range model.Routes {
+			routes[route.RouteKey.RouteChannel+"/"+route.RuntimeModelID] = model
+		}
+	}
+	projected, okProjected := routes["openai/gpt-5.4"]
+	if !okProjected || projected.ModelKey.CatalogProviderID != "openai" || len(projected.Routes) != 1 {
+		t.Fatalf("projected route changed or missing: %+v", inventory.DirectModels)
+	}
+	later, okLater := routes["opencode/later-model"]
+	if !okLater {
+		t.Fatalf("registered route outside the projection is not reported: %+v", inventory.DirectModels)
+	}
+	if !later.Active || len(later.Routes) != 1 || len(later.Routes[0].Credentials) != 1 || len(later.Variants) != 1 {
+		t.Fatalf("later model lost its credential or variant: %+v", later)
+	}
+}
+
+// A route that joins a model the projection already describes brings the
+// variants that model did not have yet.
+func TestMergeRegistryRoutesKeepsVariantsOfJoiningRoutes(t *testing.T) {
+	key := modelrouting.ModelKeyJSON{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4"}
+	variant := func(id string) modelrouting.InventoryVariant {
+		return modelrouting.InventoryVariant{VariantKey: modelrouting.VariantKeyJSON{ModelKey: key, VariantID: id}}
+	}
+	route := func(channel string) modelrouting.InventoryRoute {
+		return modelrouting.InventoryRoute{
+			RouteKey: modelrouting.RouteKeyJSON{ModelKey: key, RouteChannel: channel}, RuntimeModelID: "gpt-5.4", Selectable: true,
+		}
+	}
+	projected := []modelrouting.InventoryModel{{
+		ModelKey: key, Variants: []modelrouting.InventoryVariant{variant("low")}, Routes: []modelrouting.InventoryRoute{route("openai")},
+	}}
+	registryModels := []modelrouting.InventoryModel{{
+		ModelKey: key, Variants: []modelrouting.InventoryVariant{variant("low"), variant("high")},
+		Routes: []modelrouting.InventoryRoute{route("openai"), route("codex")},
+	}}
 	merged := mergeRegistryRoutes(projected, registryModels)
-	if len(projected) != 1 || len(merged) != 2 {
-		t.Fatalf("inventory carries %d projected / %d merged models, want 1 / 2", len(projected), len(merged))
-	}
-	if len(merged[0].Routes) != 1 || merged[0].Routes[0].RouteKey.RouteChannel != "openai" {
-		t.Fatalf("projected model changed: %+v", merged[0])
-	}
-	later := merged[1]
-	if later.ModelKey.CatalogProviderID != "opencode" || later.ModelKey.CanonicalModelID != "later-model" {
-		t.Fatalf("later model key = %+v, want opencode/later-model", later.ModelKey)
-	}
-	if len(later.Routes) != 1 || len(later.Routes[0].Credentials) != 1 || !later.Active {
-		t.Fatalf("later model is not selectable from its registered credential: %+v", later)
+	if len(merged) != 1 || len(merged[0].Routes) != 2 || len(merged[0].Variants) != 2 || !merged[0].Active {
+		t.Fatalf("merged model = %+v, want one model with both routes and both variants", merged)
 	}
 }
