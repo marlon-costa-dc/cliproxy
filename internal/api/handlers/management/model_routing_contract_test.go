@@ -474,6 +474,27 @@ func TestBootstrapInventorySurfacesRoutesThatCannotDeclareCatalogFacts(t *testin
 		}
 	})
 
+	t.Run("route without a wire protocol is not a routing candidate", func(t *testing.T) {
+		native := registry.RegisteredRouteSnapshot{
+			ClientID: auth.ID, RouteChannel: "opencode", RuntimeModelID: "gemini-3-pro",
+			Model: &registry.ModelInfo{ID: "gemini-3-pro", DisplayName: "gemini-3-pro"},
+		}
+		models, err := bootstrapInventoryModels(
+			[]registry.RegisteredRouteSnapshot{native, catalogRoute}, auths, time.Now(),
+		)
+		if err != nil {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+		}
+		if len(models) != 1 || models[0].ModelKey.CanonicalModelID != "gpt-5.4" {
+			t.Fatalf("bootstrapInventoryModels() built %+v, want only the protocol-bearing route", models)
+		}
+		for _, route := range models[0].Routes {
+			if len(route.Protocols) == 0 {
+				t.Fatalf("route %+v has no protocols", route.RouteKey)
+			}
+		}
+	})
+
 	t.Run("partially declared route is malformed and still fails", func(t *testing.T) {
 		partial := claudeRoute
 		partial.Model = &registry.ModelInfo{ID: "glm-5.3", CatalogProviderID: "zhipuai"}

@@ -271,7 +271,7 @@ func bootstrapFactsForRoute(route registry.RegisteredRouteSnapshot, routeIndex i
 		// route speaks Anthropic Messages regardless of any catalog
 		// declaration, and a published projection may not carry empty
 		// protocols.
-		protocols := append([]string(nil), route.Model.Protocols...)
+		protocols := routeProtocols(route.Model.Protocols)
 		if len(protocols) == 0 && route.RouteChannel == "claude" {
 			protocols = []string{"anthropic_messages"}
 		}
@@ -297,7 +297,7 @@ func bootstrapFactsForRoute(route registry.RegisteredRouteSnapshot, routeIndex i
 		variantID:              strings.TrimSpace(route.Model.VariantID),
 		catalogRouteProviderID: route.Model.CatalogRouteProviderID,
 		catalogRouteModelID:    route.Model.CatalogRouteModelID,
-		protocols:              append([]string(nil), route.Model.Protocols...),
+		protocols:              routeProtocols(route.Model.Protocols),
 		selectionReason:        "route facts were discovered from the runtime registry",
 	}, nil
 }
@@ -320,6 +320,13 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 		}
 		if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 			return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)
+		}
+		if len(facts.protocols) == 0 {
+			// Model routing executes a route through a wire protocol; a route
+			// whose model declares none (for example an OpenCode gateway model
+			// served natively over Gemini) stays directly addressable but is
+			// not a model-routing candidate, so the routing inventory omits it.
+			continue
 		}
 		modelKey := modelKeyJSON(facts.routeKey.ModelKey)
 		modelID := modelKey.CatalogProviderID + "\x00" + modelKey.CanonicalModelID
@@ -400,6 +407,12 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 		return left.CanonicalModelID < right.CanonicalModelID
 	})
 	return result, nil
+}
+
+// routeProtocols copies a route's wire protocols into the inventory's array
+// contract: a route without protocols is an empty list, never JSON null.
+func routeProtocols(protocols []string) []string {
+	return append(make([]string, 0, len(protocols)), protocols...)
 }
 
 func equalStrings(left, right []string) bool {

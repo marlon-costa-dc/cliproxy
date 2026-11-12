@@ -131,3 +131,34 @@ func TestOpenCodeRoutes_JsonCoversDocs(t *testing.T) {
 		}
 	}
 }
+
+func TestGetOpenCodeModels_DeclareTheExecutorWireProtocol(t *testing.T) {
+	wire := map[string]string{
+		"messages":  "anthropic_messages",
+		"responses": "openai_responses",
+		"chat":      "openai_chat",
+	}
+	for _, gateway := range []string{"zen", "go"} {
+		models := GetOpenCodeModels(gateway)
+		if len(models) == 0 {
+			t.Fatalf("gateway %s: no OpenCode models", gateway)
+		}
+		declared := 0
+		for _, model := range models {
+			expected, executable := wire[ResolveOpenCodeProtocol(gateway, model.ID)]
+			if !executable {
+				if len(model.Protocols) != 0 {
+					t.Errorf("gateway %s model %s: protocols %v without an executor wire protocol", gateway, model.ID, model.Protocols)
+				}
+				continue
+			}
+			declared++
+			if len(model.Protocols) != 1 || model.Protocols[0] != expected {
+				t.Errorf("gateway %s model %s: protocols %v, want [%s]", gateway, model.ID, model.Protocols, expected)
+			}
+		}
+		if declared == 0 {
+			t.Errorf("gateway %s: no model declared an executable protocol", gateway)
+		}
+	}
+}
