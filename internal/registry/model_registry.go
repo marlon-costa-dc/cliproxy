@@ -149,6 +149,11 @@ type ModelRegistration struct {
 	Providers map[string]int
 	// SuspendedClients tracks temporarily disabled clients keyed by client ID
 	SuspendedClients map[string]string
+	// ExplicitSuspensions holds only the suspensions requested through
+	// SuspendClientModel. A mirrored auth cooldown also lands in
+	// SuspendedClients, but it ends at its recovery instant, while an explicit
+	// suspension lasts until ResumeClientModel or the next auth projection.
+	ExplicitSuspensions map[string]string
 }
 
 // RegisteredRouteSnapshot is an internal management-plane fact. ClientID is
@@ -510,6 +515,7 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 			if reg.SuspendedClients != nil {
 				delete(reg.SuspendedClients, clientID)
 			}
+			delete(reg.ExplicitSuspensions, clientID)
 			if providerChanged && provider != "" {
 				if _, newlyAdded := addedSet[id]; newlyAdded {
 					continue
@@ -610,6 +616,7 @@ func (r *ModelRegistry) removeModelRegistration(clientID, modelID, provider stri
 	if registration.SuspendedClients != nil {
 		delete(registration.SuspendedClients, clientID)
 	}
+	delete(registration.ExplicitSuspensions, clientID)
 	if registration.Count < 0 {
 		registration.Count = 0
 	}
@@ -735,6 +742,7 @@ func (r *ModelRegistry) unregisterClientInternal(clientID string) {
 			if registration.SuspendedClients != nil {
 				delete(registration.SuspendedClients, clientID)
 			}
+			delete(registration.ExplicitSuspensions, clientID)
 
 			if hasProvider && registration.Providers != nil {
 				if count, ok := registration.Providers[provider]; ok {
@@ -890,7 +898,9 @@ func (r *ModelRegistry) ApplyClientModelProjections(clientID string, epoch uint6
 			continue
 		}
 
-		// Update suspended state
+		// Update suspended state. The auth state owns the suspension from
+		// here on, so it stops counting as an explicit one.
+		delete(registration.ExplicitSuspensions, clientID)
 		if proj.Suspended {
 			if registration.SuspendedClients == nil {
 				registration.SuspendedClients = make(map[string]string)
@@ -957,9 +967,13 @@ func (r *ModelRegistry) SuspendClientModel(clientID, modelID, reason string) {
 	if registration.SuspendedClients == nil {
 		registration.SuspendedClients = make(map[string]string)
 	}
-	if _, already := registration.SuspendedClients[clientID]; already {
+	if _, already := registration.ExplicitSuspensions[clientID]; already {
 		return
 	}
+	if registration.ExplicitSuspensions == nil {
+		registration.ExplicitSuspensions = make(map[string]string)
+	}
+	registration.ExplicitSuspensions[clientID] = reason
 	registration.SuspendedClients[clientID] = reason
 	registration.LastUpdated = time.Now()
 	r.invalidateAvailableModelsCacheLocked()
@@ -990,6 +1004,7 @@ func (r *ModelRegistry) ResumeClientModel(clientID, modelID string) {
 		return
 	}
 	delete(registration.SuspendedClients, clientID)
+	delete(registration.ExplicitSuspensions, clientID)
 	registration.LastUpdated = time.Now()
 	r.invalidateAvailableModelsCacheLocked()
 	log.Debugf("Resumed client %s for model %s", clientID, modelID)
@@ -1199,7 +1214,7 @@ func (r *ModelRegistry) RegisteredRouteSnapshots() []RegisteredRouteSnapshot {
 			}
 			snapshot := RegisteredRouteSnapshot{
 				ClientID: clientID, RouteChannel: provider, RuntimeModelID: modelID,
-				Model: cloneModelInfo(info), SuspensionReason: registration.SuspendedClients[clientID],
+				Model: cloneModelInfo(info), SuspensionReason: registration.ExplicitSuspensions[clientID],
 				LastUpdated: registration.LastUpdated.UTC(),
 			}
 			if markedAt := registration.QuotaExceededClients[clientID]; markedAt != nil {
