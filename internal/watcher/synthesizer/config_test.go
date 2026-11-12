@@ -1344,3 +1344,46 @@ func TestConfigSynthesizer_RequestScopedErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigSynthesizer_QuotaDomainDefaultsToProvider(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenCodeKey:   []config.OpenCodeKey{{APIKey: "opencode-key-123"}},
+			OpenCodeGoKey: []config.OpenCodeGoKey{{APIKey: "opencode-go-key-456"}},
+			ClaudeKey:     []config.ClaudeKey{{APIKey: "claude-key-789", QuotaDomain: "declared-pool"}},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]string{
+		"opencode":    "opencode",
+		"opencode-go": "opencode-go",
+		"claude":      "declared-pool",
+	}
+	got := make(map[string]string, len(auths))
+	for _, auth := range auths {
+		if _, duplicate := got[auth.Provider]; duplicate {
+			t.Fatalf("provider %q synthesized more than once", auth.Provider)
+		}
+		got[auth.Provider] = auth.QuotaDomain
+	}
+	for provider, expected := range want {
+		quotaDomain, ok := got[provider]
+		if !ok {
+			t.Errorf("provider %s: not synthesized", provider)
+			continue
+		}
+		if quotaDomain != expected {
+			t.Errorf("provider %s: expected quota domain %q, got %q", provider, expected, quotaDomain)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("expected providers %v, got %v", want, got)
+	}
+}

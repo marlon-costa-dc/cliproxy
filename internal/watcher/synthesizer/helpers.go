@@ -165,3 +165,16 @@ func addConfigHeadersToAttrs(headers map[string]string, attrs map[string]string)
 		attrs["header:"+key] = val
 	}
 }
+
+// applyDefaultQuotaDomain keeps a declared quota domain and otherwise names the
+// credential's provider: a config-declared credential without its own quota
+// configuration draws from its provider's canonical quota pool, the rule file
+// credentials already follow, so none reaches the model inventory without a
+// canonical quota domain.
+func applyDefaultQuotaDomain(auths []*coreauth.Auth) {
+	for _, auth := range auths {
+		if auth != nil && auth.QuotaDomain == "" {
+			auth.QuotaDomain = auth.Provider
+		}
+	}
+}
