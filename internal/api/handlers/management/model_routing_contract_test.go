@@ -680,3 +680,22 @@ func TestBootstrapInventoryKeepsChannelProtocolsForUndeclaredRoutes(t *testing.T
 		t.Fatalf("undeclared route protocols = %v, want claude anthropic_messages and opencode openai_chat", protocols)
 	}
 }
+
+// The quota-domain failure reaches the HTTP body, so it names the credential by
+// its hashed reference and never by the raw client id.
+func TestBootstrapInventoryQuotaDomainErrorHidesRawCredentialID(t *testing.T) {
+	const rawID = "/home/operator/.auths/credential-raw.json"
+	auth := &coreauth.Auth{
+		ID: rawID, Provider: "opencode", RouteChannel: "opencode", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "api_key"},
+	}
+	_, err := bootstrapInventoryModels([]registry.RegisteredRouteSnapshot{{
+		ClientID: rawID, RouteChannel: "opencode", RuntimeModelID: "later-model", Model: &registry.ModelInfo{ID: "later-model"},
+	}}, map[string]*coreauth.Auth{rawID: auth}, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "registered route 0 has no canonical quota domain") {
+		t.Fatalf("bootstrapInventoryModels() error = %v, want the quota-domain failure", err)
+	}
+	if strings.Contains(err.Error(), rawID) || !strings.Contains(err.Error(), coreauth.CredentialReferenceID(rawID)) {
+		t.Fatalf("quota-domain error = %q, want the hashed credential reference only", err)
+	}
+}
