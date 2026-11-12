@@ -1636,7 +1636,7 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 
 	saved, errUpdate := m.UpdatePreparedAuth(ctx, base, updated)
 	if errUpdate != nil {
-		return nil, errUpdate
+		return auth, errUpdate
 	}
 	if saved != nil {
 		return saved, nil
