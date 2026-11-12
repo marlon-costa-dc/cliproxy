@@ -560,3 +560,44 @@ func TestBootstrapInventorySurfacesRoutesThatCannotDeclareCatalogFacts(t *testin
 		}
 	})
 }
+
+// A provider activated after the first publication is registered but absent
+// from the projection; the inventory must still carry it, or the pipeline that
+// reads this surface can never select it.
+func TestInventoryKeepsRegisteredRoutesTheProjectionDoesNotDescribe(t *testing.T) {
+	projection := managementRoutingProjection()
+	auths := map[string]*coreauth.Auth{
+		"credential-a": {
+			ID: "credential-a", Provider: "openai", RouteChannel: "openai", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
+			Attributes: map[string]string{"auth_kind": "oauth", "quota_domain": "quota-a"},
+		},
+		"credential-b": {
+			ID: "credential-b", Provider: "opencode", RouteChannel: "opencode", QuotaDomain: "quota-b", Status: coreauth.StatusActive,
+			Attributes: map[string]string{"auth_kind": "api_key"},
+		},
+	}
+	registered := []registry.RegisteredRouteSnapshot{
+		{ClientID: "credential-a", RouteChannel: "openai", RuntimeModelID: "gpt-5.4", Model: &registry.ModelInfo{ID: "gpt-5.4"}},
+		{ClientID: "credential-b", RouteChannel: "opencode", RuntimeModelID: "later-model", Model: &registry.ModelInfo{ID: "later-model"}},
+	}
+	now := time.Now()
+	registryModels, err := bootstrapInventoryModels(registered, auths, now)
+	if err != nil {
+		t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+	}
+	projected := projectedInventoryModels(projection, registered, auths, now)
+	merged := mergeRegistryRoutes(projected, registryModels)
+	if len(projected) != 1 || len(merged) != 2 {
+		t.Fatalf("inventory carries %d projected / %d merged models, want 1 / 2", len(projected), len(merged))
+	}
+	if len(merged[0].Routes) != 1 || merged[0].Routes[0].RouteKey.RouteChannel != "openai" {
+		t.Fatalf("projected model changed: %+v", merged[0])
+	}
+	later := merged[1]
+	if later.ModelKey.CatalogProviderID != "opencode" || later.ModelKey.CanonicalModelID != "later-model" {
+		t.Fatalf("later model key = %+v, want opencode/later-model", later.ModelKey)
+	}
+	if len(later.Routes) != 1 || len(later.Routes[0].Credentials) != 1 || !later.Active {
+		t.Fatalf("later model is not selectable from its registered credential: %+v", later)
+	}
+}
