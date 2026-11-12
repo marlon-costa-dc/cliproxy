@@ -560,3 +560,142 @@ func TestBootstrapInventorySurfacesRoutesThatCannotDeclareCatalogFacts(t *testin
 		}
 	})
 }
+
+// A provider activated after the first publication is registered but absent
+// from the projection; the inventory endpoint must still report it, or the
+// pipeline that reads this surface can never select it.
+func TestModelInventoryReportsRegisteredRoutesTheProjectionDoesNotDescribe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	manager := coreauth.NewManager(nil, nil, nil)
+	reg := registry.GetGlobalRegistry()
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID: "credential-a", Provider: "openai", RouteChannel: "openai", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
+			Attributes: map[string]string{"auth_kind": "oauth", "quota_domain": "quota-a"},
+		},
+		{
+			ID: "credential-later", Provider: "opencode", RouteChannel: "opencode", QuotaDomain: "quota-later", Status: coreauth.StatusActive,
+			Attributes: map[string]string{"auth_kind": "api_key", "quota_domain": "quota-later"},
+		},
+	} {
+		if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+		}
+	}
+	reg.RegisterClient("credential-a", "openai", []*registry.ModelInfo{{ID: "gpt-5.4"}})
+	reg.RegisterClient("credential-later", "opencode", []*registry.ModelInfo{
+		{ID: "later-model", VariantID: "high", Protocols: []string{"openai_chat"},
+			CatalogProviderID: "opencode", CatalogModelID: "later-model",
+			CatalogRouteProviderID: "opencode", CatalogRouteModelID: "later-model"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("credential-a")
+		reg.UnregisterClient("credential-later")
+	})
+
+	loadedAt := time.Date(2026, 8, 27, 18, 45, 0, 0, time.UTC)
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, manager)
+	h.SetModelRoutingStateHook(func() modelrouting.ActiveStateV2 {
+		return modelrouting.ActiveStateV2{
+			Identity: &modelrouting.ActiveIdentityV2{Generation: 1},
+			LoadedAt: &loadedAt, Projection: managementRoutingProjection(),
+		}
+	})
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/model-inventory", nil)
+	h.GetModelInventory(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GetModelInventory() status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var inventory modelrouting.Inventory
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &inventory); errDecode != nil {
+		t.Fatalf("decode inventory: %v", errDecode)
+	}
+	routes := map[string]modelrouting.InventoryModel{}
+	for _, model := range inventory.DirectModels {
+		for _, route := range model.Routes {
+			routes[route.RouteKey.RouteChannel+"/"+route.RuntimeModelID] = model
+		}
+	}
+	projected, okProjected := routes["openai/gpt-5.4"]
+	if !okProjected || projected.ModelKey.CatalogProviderID != "openai" || len(projected.Routes) != 1 {
+		t.Fatalf("projected route changed or missing: %+v", inventory.DirectModels)
+	}
+	later, okLater := routes["opencode/later-model"]
+	if !okLater {
+		t.Fatalf("registered route outside the projection is not reported: %+v", inventory.DirectModels)
+	}
+	if !later.Active || len(later.Routes) != 1 || len(later.Routes[0].Credentials) != 1 || len(later.Variants) != 1 {
+		t.Fatalf("later model lost its credential or variant: %+v", later)
+	}
+}
+
+// A route that joins a model the projection already describes brings the
+// variants that model did not have yet.
+func TestMergeRegistryRoutesKeepsVariantsOfJoiningRoutes(t *testing.T) {
+	key := modelrouting.ModelKeyJSON{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4"}
+	variant := func(id string) modelrouting.InventoryVariant {
+		return modelrouting.InventoryVariant{VariantKey: modelrouting.VariantKeyJSON{ModelKey: key, VariantID: id}}
+	}
+	route := func(channel string) modelrouting.InventoryRoute {
+		return modelrouting.InventoryRoute{
+			RouteKey: modelrouting.RouteKeyJSON{ModelKey: key, RouteChannel: channel}, RuntimeModelID: "gpt-5.4", Selectable: true,
+		}
+	}
+	projected := []modelrouting.InventoryModel{{
+		ModelKey: key, Variants: []modelrouting.InventoryVariant{variant("low")}, Routes: []modelrouting.InventoryRoute{route("openai")},
+	}}
+	registryModels := []modelrouting.InventoryModel{{
+		ModelKey: key, Variants: []modelrouting.InventoryVariant{variant("low"), variant("high")},
+		Routes: []modelrouting.InventoryRoute{route("openai"), route("codex")},
+	}}
+	merged := mergeRegistryRoutes(projected, registryModels)
+	if len(merged) != 1 || len(merged[0].Routes) != 2 || len(merged[0].Variants) != 2 || !merged[0].Active {
+		t.Fatalf("merged model = %+v, want one model with both routes and both variants", merged)
+	}
+}
+
+// An undeclared route keeps the wire protocol its channel owns: a claude
+// channel route speaks Anthropic Messages, and a route that registered its own
+// protocols keeps them.
+func TestBootstrapInventoryKeepsChannelProtocolsForUndeclaredRoutes(t *testing.T) {
+	auths := map[string]*coreauth.Auth{"credential-a": {
+		ID: "credential-a", Provider: "anthropic", RouteChannel: "claude", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "api_key"},
+	}}
+	models, err := bootstrapInventoryModels([]registry.RegisteredRouteSnapshot{
+		{ClientID: "credential-a", RouteChannel: "claude", RuntimeModelID: "glm-5.3", Model: &registry.ModelInfo{ID: "glm-5.3"}},
+		{ClientID: "credential-a", RouteChannel: "opencode", RuntimeModelID: "later-model", Model: &registry.ModelInfo{ID: "later-model", Protocols: []string{"openai_chat"}}},
+	}, auths, time.Now())
+	if err != nil || len(models) != 2 {
+		t.Fatalf("bootstrapInventoryModels() = %d models, error %v; want 2, nil", len(models), err)
+	}
+	protocols := map[string][]string{}
+	for _, model := range models {
+		protocols[model.Routes[0].RouteKey.RouteChannel] = model.Routes[0].Protocols
+	}
+	if !equalStrings(protocols["claude"], []string{"anthropic_messages"}) || !equalStrings(protocols["opencode"], []string{"openai_chat"}) {
+		t.Fatalf("undeclared route protocols = %v, want claude anthropic_messages and opencode openai_chat", protocols)
+	}
+}
+
+// The quota-domain failure reaches the HTTP body, so it names the credential by
+// its hashed reference and never by the raw client id.
+func TestBootstrapInventoryQuotaDomainErrorHidesRawCredentialID(t *testing.T) {
+	const rawID = "/home/operator/.auths/credential-raw.json"
+	auth := &coreauth.Auth{
+		ID: rawID, Provider: "opencode", RouteChannel: "opencode", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "api_key"},
+	}
+	_, err := bootstrapInventoryModels([]registry.RegisteredRouteSnapshot{{
+		ClientID: rawID, RouteChannel: "opencode", RuntimeModelID: "later-model", Model: &registry.ModelInfo{ID: "later-model"},
+	}}, map[string]*coreauth.Auth{rawID: auth}, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "registered route 0 has no canonical quota domain") {
+		t.Fatalf("bootstrapInventoryModels() error = %v, want the quota-domain failure", err)
+	}
+	if strings.Contains(err.Error(), rawID) || !strings.Contains(err.Error(), coreauth.CredentialReferenceID(rawID)) {
+		t.Fatalf("quota-domain error = %q, want the hashed credential reference only", err)
+	}
+}
