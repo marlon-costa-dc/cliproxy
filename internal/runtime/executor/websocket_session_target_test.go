@@ -236,12 +236,16 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 			var connections atomic.Int32
 			releaseSuccessfulConnection := make(chan struct{})
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Number the connection before the upgrade response is written:
+				// the client dials the next one only after reading that
+				// response, so the order is the dial order. Counting afterwards
+				// let a later connection take an earlier number.
+				connection := connections.Add(1)
 				conn, errUpgrade := upgrader.Upgrade(w, r, nil)
 				if errUpgrade != nil {
 					t.Errorf("upgrade websocket: %v", errUpgrade)
 					return
 				}
-				connection := connections.Add(1)
 				defer func() { _ = conn.Close() }()
 				if connection == 1 {
 					_, _, _ = conn.ReadMessage()
