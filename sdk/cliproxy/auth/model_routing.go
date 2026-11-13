@@ -62,7 +62,7 @@ func ModelRoutingResponseHeaderNames() []string {
 
 type modelRoutingTable struct {
 	aliases          map[string][]RoutingCandidate
-	direct           map[string][]RoutingCandidate
+	declaredAliases  map[string]struct{}
 	routes           map[string]RoutingCandidate
 	variants         map[string]map[string]modelrouting.Variant
 	failurePolicy    modelrouting.FailurePolicy
@@ -296,11 +296,11 @@ func equalCredentialRefs(left, right []modelrouting.CredentialRef) bool {
 
 func compileModelRouting(projection *modelrouting.Config) *modelRoutingTable {
 	table := &modelRoutingTable{
-		aliases:   make(map[string][]RoutingCandidate),
-		direct:    make(map[string][]RoutingCandidate),
-		routes:    make(map[string]RoutingCandidate),
-		variants:  make(map[string]map[string]modelrouting.Variant),
-		projected: projection != nil,
+		aliases:         make(map[string][]RoutingCandidate),
+		declaredAliases: make(map[string]struct{}),
+		routes:          make(map[string]RoutingCandidate),
+		variants:        make(map[string]map[string]modelrouting.Variant),
+		projected:       projection != nil,
 	}
 	if projection == nil {
 		return table
@@ -330,11 +330,10 @@ func compileModelRouting(projection *modelrouting.Config) *modelRoutingTable {
 				ProjectionDigest:  projection.ProjectionDigest,
 			}
 			table.routes[route.RouteSelector] = candidate
-			directKey := strings.ToLower(route.RuntimeModelID)
-			table.direct[directKey] = append(table.direct[directKey], candidate)
 		}
 	}
 	for _, alias := range projection.Aliases {
+		table.declaredAliases[strings.ToLower(alias.Name)] = struct{}{}
 		if !alias.Selectable {
 			continue
 		}
@@ -465,11 +464,11 @@ func (m *Manager) modelRoutingCandidates(requestedModel string, opts cliproxyexe
 	if candidates, exists := table.aliases[key]; exists {
 		return cloneRoutingCandidates(candidates), true, nil
 	}
-	if candidates, exists := table.direct[key]; exists {
-		return cloneRoutingCandidates(candidates), true, nil
-	}
-	if strings.HasPrefix(key, "aihub-") {
-		return nil, true, routingContractError("route_not_selectable", "managed alias is absent from the active projection", http.StatusServiceUnavailable)
+	// The projection owns only the aliases it declares. A declared alias with
+	// no selectable member stops its own consumers; any other model name is not
+	// the projection's to route and falls through to ordinary selection.
+	if _, declared := table.declaredAliases[key]; declared {
+		return nil, true, routingContractError("route_not_selectable", "managed alias has no selectable member in the active projection", http.StatusServiceUnavailable)
 	}
 	return nil, false, nil
 }

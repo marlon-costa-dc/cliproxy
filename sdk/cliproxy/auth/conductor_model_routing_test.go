@@ -995,9 +995,9 @@ func TestModelRoutingQuotaCooldownWithoutRetryAfterRecoversAtRecoveryInstant(t *
 		t.Fatalf("runtime validation at recovery instant error = %v", errRecovered)
 	}
 	table := compileModelRouting(projection)
-	candidates := table.direct[strings.ToLower(runtimeModelID)]
-	if len(candidates) != 1 || len(candidates[0].CredentialRefs) != 1 || candidates[0].CredentialRefs[0].ID != CredentialReferenceID(credentialID) {
-		t.Fatalf("recovered routing candidates = %+v, want the recovered credential", candidates)
+	candidate, exists := table.routes[modelrouting.SelectorForRoute(routeKey, runtimeModelID)]
+	if !exists || len(candidate.CredentialRefs) != 1 || candidate.CredentialRefs[0].ID != CredentialReferenceID(credentialID) {
+		t.Fatalf("recovered routing candidate = %+v, want the recovered credential", candidate)
 	}
 
 	reg.SuspendClientModel(credentialID, runtimeModelID, "manual")
@@ -1066,5 +1066,41 @@ func TestModelRoutingEmptyLaneStopsItsOwnConsumersWithoutCrossing(t *testing.T) 
 	}
 	if got := healthy.executeCalls.Load(); got != 0 {
 		t.Fatalf("healthy route calls = %d, want 0 (lanes never cross)", got)
+	}
+}
+
+func TestModelRoutingLeavesUndeclaredModelNamesToOrdinarySelection(t *testing.T) {
+	// The projection owns only the aliases it declares: a consumer asking for
+	// a runtime model by its own name is never captured by a projected route.
+	first := &modelRoutingAttemptExecutor{identifier: "route-first"}
+	second := &modelRoutingAttemptExecutor{identifier: "route-second"}
+	runtime := newModelRoutingTestRuntime(t, first, second, 2)
+	runtimeModelID := runtime.projection.DirectModels[0].Routes[0].RuntimeModelID
+
+	candidates, matched, errCandidates := runtime.manager.modelRoutingCandidates(runtimeModelID, modelRoutingOptions())
+	if errCandidates != nil || matched || candidates != nil {
+		t.Fatalf("runtime model name candidates = %#v matched=%t error=%v, want unmatched", candidates, matched, errCandidates)
+	}
+
+	options := modelRoutingOptions()
+	options.Headers.Set(probeRouteSelectorHeader, runtime.projection.DirectModels[0].Routes[0].RouteSelector)
+	selected, matchedSelector, errSelector := runtime.manager.modelRoutingCandidates(runtimeModelID, options)
+	if errSelector != nil || !matchedSelector || len(selected) != 1 {
+		t.Fatalf("selector candidates = %#v matched=%t error=%v, want the selected route", selected, matchedSelector, errSelector)
+	}
+}
+
+func TestModelRoutingDeclaredAliasWithoutSelectableMemberStopsItsConsumers(t *testing.T) {
+	alias := "lane-" + uuid.NewString()
+	table := compileModelRouting(&modelrouting.Config{Aliases: []modelrouting.Alias{{
+		Name: alias, TierID: "lane", Selectable: false, Reason: "no healthy eligible model is available for this lane",
+	}}})
+	manager := NewManager(nil, nil, NoopHook{})
+	manager.modelRouting.Store(table)
+
+	candidates, matched, errCandidates := manager.modelRoutingCandidates(alias, modelRoutingOptions())
+	var contract *Error
+	if !errors.As(errCandidates, &contract) || !matched || candidates != nil || contract.Code != "route_not_selectable" {
+		t.Fatalf("empty declared alias candidates = %#v matched=%t error=%v, want route_not_selectable", candidates, matched, errCandidates)
 	}
 }
