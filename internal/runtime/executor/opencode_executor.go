@@ -98,6 +98,11 @@ func (e *OpenCodeExecutor) requestAuth(auth *clipoauth.Auth, opts cliproxyexecut
 	if cloned == nil {
 		return nil
 	}
+	// The delegated Claude and Gemini executors read the key only from
+	// attributes; an OpenCode credential may carry it in metadata.
+	if apiKey, ok := openCodeCreds(auth); ok {
+		cloned.Attributes["api_key"] = apiKey
+	}
 	sessionID := helps.AffinitySessionUUID(e.id, clipoauth.ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata))
 	if sessionID != "" {
 		cloned.Attributes["header:"+openCodeSessionHeader] = sessionID
