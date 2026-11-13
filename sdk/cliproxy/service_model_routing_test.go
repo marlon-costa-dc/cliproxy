@@ -10,14 +10,14 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
-// A persisted projection whose credential no longer exists (a rotated key)
-// must not stop the proxy: it starts with no active generation, so the
-// publisher can bootstrap a fresh one.
+// A persisted projection that cannot be prepared (for one, its credential was
+// rotated away) must not stop the proxy: it leaves the config file and the
+// running configuration, and the proxy starts with no active generation.
 func TestInitializeModelRoutingStartsWithoutAStaleProjection(t *testing.T) {
 	modelKey := modelrouting.ModelKey{CatalogProviderID: "catalog-provider", CanonicalModelID: "rotated-model"}
 	routeKey := modelrouting.RouteKey{ModelKey: modelKey, RouteChannel: "rotated-channel"}
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if errWrite := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); errWrite != nil {
+	if errWrite := os.WriteFile(configPath, []byte("# kept\nport: 8317\nmodel-routing:\n  generation: 11\ndebug: false\n"), 0o600); errWrite != nil {
 		t.Fatalf("write config: %v", errWrite)
 	}
 	service := &Service{
@@ -48,5 +48,12 @@ func TestInitializeModelRoutingStartsWithoutAStaleProjection(t *testing.T) {
 	}
 	if service.cfg.ModelRouting != nil {
 		t.Fatal("stale projection is still part of the running configuration")
+	}
+	persisted, errRead := os.ReadFile(configPath)
+	if errRead != nil {
+		t.Fatalf("read config: %v", errRead)
+	}
+	if got, want := string(persisted), "# kept\nport: 8317\ndebug: false\n"; got != want {
+		t.Fatalf("persisted config = %q, want %q", got, want)
 	}
 }

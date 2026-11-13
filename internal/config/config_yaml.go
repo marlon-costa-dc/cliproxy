@@ -191,6 +191,33 @@ func UpdateNestedScalarBytes(data []byte, path []string, value string) ([]byte, 
 	return NormalizeCommentIndentation(buf.Bytes()), nil
 }
 
+// RemoveTopLevelKeyPreserveComments deletes one top-level key from the config
+// file, keeping every other key, comment and position.
+func RemoveTopLevelKeyPreserveComments(configFile string, key string) error {
+	data, errRead := os.ReadFile(configFile)
+	if errRead != nil {
+		return errRead
+	}
+	var root yaml.Node
+	if errUnmarshal := yaml.Unmarshal(data, &root); errUnmarshal != nil {
+		return errUnmarshal
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return fmt.Errorf("invalid yaml document structure")
+	}
+	removeMapKey(root.Content[0], key)
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if errEncode := encoder.Encode(&root); errEncode != nil {
+		return errors.Join(errEncode, encoder.Close())
+	}
+	if errClose := encoder.Close(); errClose != nil {
+		return errClose
+	}
+	return WriteConfigAtomicExact(configFile, NormalizeCommentIndentation(buf.Bytes()))
+}
+
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
 // while preserving comments and positions.
 func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []string, value string) error {

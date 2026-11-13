@@ -223,10 +223,14 @@ func (s *Service) initializeModelRouting() error {
 	prepared, errPrepare := s.coreManager.PrepareModelRouting(s.cfg.ModelRouting)
 	if errPrepare != nil {
 		// A persisted projection the live credentials no longer satisfy (a
-		// rotated or removed key) is refused, never served: the proxy starts
-		// with no active generation, so the publisher bootstraps a fresh one
-		// through the CAS endpoint, and every other route keeps working.
+		// rotated or removed key) is refused, never served: it leaves the
+		// config file and the running configuration, the proxy starts with no
+		// active generation, the publisher bootstraps a fresh one through the
+		// CAS endpoint, and every other route and config reload keeps working.
 		log.Errorf("persisted model-routing generation %d is not activated: %v", s.cfg.ModelRouting.Generation, errPrepare)
+		if errRemove := internalconfig.RemoveTopLevelKeyPreserveComments(s.configPath, "model-routing"); errRemove != nil {
+			return fmt.Errorf("remove refused model-routing projection: %w", errRemove)
+		}
 		s.cfgMu.Lock()
 		s.cfg = configWithoutModelRouting(s.cfg)
 		s.cfgMu.Unlock()
@@ -234,7 +238,11 @@ func (s *Service) initializeModelRouting() error {
 		if errUnrouted != nil {
 			return errUnrouted
 		}
-		return s.coreManager.ActivatePreparedModelRouting(unrouted)
+		if errActivate := s.coreManager.ActivatePreparedModelRouting(unrouted); errActivate != nil {
+			return errActivate
+		}
+		s.setModelRoutingState(nil, nil, time.Time{})
+		return nil
 	}
 	if errActivate := s.coreManager.ActivatePreparedModelRouting(prepared); errActivate != nil {
 		return fmt.Errorf("activate initial model-routing runtime: %w", errActivate)
