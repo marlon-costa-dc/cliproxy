@@ -103,6 +103,9 @@ func (e *OpenCodeExecutor) requestAuth(auth *clipoauth.Auth, opts cliproxyexecut
 	if apiKey, ok := openCodeCreds(auth); ok {
 		cloned.Attributes["api_key"] = apiKey
 	}
+	// OpenCode serves its messages protocol with Anthropic authentication:
+	// the gateway reads x-api-key and rejects a Bearer key as missing.
+	cloned.Attributes["anthropic_auth_scheme"] = "x-api-key"
 	sessionID := helps.AffinitySessionUUID(e.id, clipoauth.ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata))
 	if sessionID != "" {
 		cloned.Attributes["header:"+openCodeSessionHeader] = sessionID
