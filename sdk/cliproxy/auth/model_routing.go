@@ -488,12 +488,17 @@ func (m *Manager) bootstrapRoutingCandidate(selector, requestedModel string) (Ro
 		if registered.RuntimeModelID != requestedModel {
 			continue
 		}
-		key, errKey := registered.ModelRoutingKey(index)
+		key, errKey := registered.RoutingKey(index)
 		if errKey != nil {
 			return RoutingCandidate{}, true, routingContractError("route_not_selectable", errKey.Error(), http.StatusServiceUnavailable)
 		}
 		if modelrouting.SelectorForRoute(key, registered.RuntimeModelID) != selector {
 			continue
+		}
+		// The inventory omits a route that serves no wire protocol, so its
+		// selector is never a model-routing candidate either.
+		if len(registered.RoutingProtocols()) == 0 {
+			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered route serves no wire protocol", http.StatusServiceUnavailable)
 		}
 		info := registered.Model
 
@@ -502,7 +507,7 @@ func (m *Manager) bootstrapRoutingCandidate(selector, requestedModel string) (Ro
 				Channel:           registered.RouteChannel,
 				RuntimeModelID:    registered.RuntimeModelID,
 				RouteSelector:     selector,
-				Protocols:         append([]string(nil), info.Protocols...),
+				Protocols:         registered.RoutingProtocols(),
 				CatalogProviderID: key.ModelKey.CatalogProviderID,
 				CanonicalModelID:  key.ModelKey.CanonicalModelID,
 				bootstrap:         true,
@@ -516,7 +521,7 @@ func (m *Manager) bootstrapRoutingCandidate(selector, requestedModel string) (Ro
 			candidate.CanonicalModelID != key.ModelKey.CanonicalModelID ||
 			catalogRouteProviderID != info.CatalogRouteProviderID ||
 			catalogRouteModelID != info.CatalogRouteModelID ||
-			!equalStrings(candidate.Protocols, info.Protocols) {
+			!equalStrings(candidate.Protocols, registered.RoutingProtocols()) {
 			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered routes conflict for the requested selector", http.StatusServiceUnavailable)
 		}
 

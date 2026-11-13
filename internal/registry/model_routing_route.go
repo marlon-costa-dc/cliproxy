@@ -54,6 +54,37 @@ func (route RegisteredRouteSnapshot) CatalogDeclarationOf() CatalogDeclaration {
 	}
 }
 
+// RoutingKey returns the one route key the inventory publishes and the
+// bootstrap selector resolves for this route. A route whose type cannot declare
+// catalog facts is surfaced under its channel identity; every other route must
+// carry a complete catalog declaration.
+func (route RegisteredRouteSnapshot) RoutingKey(index int) (modelrouting.RouteKey, error) {
+	if route.Model != nil && strings.HasPrefix(strings.ToLower(route.RuntimeModelID), "aihub-") {
+		return modelrouting.RouteKey{}, fmt.Errorf("registered route %d contains a managed alias before projection", index)
+	}
+	if route.Model != nil && route.CatalogDeclarationOf() == CatalogDeclarationNone {
+		return modelrouting.RouteKey{
+			ModelKey:     modelrouting.ModelKey{CatalogProviderID: route.RouteChannel, CanonicalModelID: route.RuntimeModelID},
+			RouteChannel: route.RouteChannel,
+		}, nil
+	}
+	return route.ModelRoutingKey(index)
+}
+
+// RoutingProtocols returns the wire protocols the route serves. A surfaced
+// claude channel route speaks Anthropic Messages even when its model declares
+// none, and a published projection may not carry empty protocols.
+func (route RegisteredRouteSnapshot) RoutingProtocols() []string {
+	if route.Model == nil {
+		return nil
+	}
+	protocols := append(make([]string, 0, len(route.Model.Protocols)), route.Model.Protocols...)
+	if len(protocols) == 0 && route.RouteChannel == "claude" && route.CatalogDeclarationOf() == CatalogDeclarationNone {
+		protocols = []string{"anthropic_messages"}
+	}
+	return protocols
+}
+
 // ModelRoutingKey validates the registry-owned identity required by the model
 // routing bootstrap and returns its canonical route key.
 func (route RegisteredRouteSnapshot) ModelRoutingKey(index int) (modelrouting.RouteKey, error) {

@@ -288,35 +288,19 @@ type bootstrapRouteFacts struct {
 // surfaced under channel identity instead of hidden, which would strand
 // generation one.
 func bootstrapFactsForRoute(route registry.RegisteredRouteSnapshot, routeIndex int) (bootstrapRouteFacts, error) {
-	// A managed alias is a projection leak and stays fatal regardless of how
-	// the route declares its catalog identity.
-	if route.Model != nil && strings.HasPrefix(strings.ToLower(route.RuntimeModelID), "aihub-") {
-		return bootstrapRouteFacts{}, fmt.Errorf("registered route %d contains a managed alias before projection", routeIndex)
+	routeKey, errRoute := route.RoutingKey(routeIndex)
+	if errRoute != nil {
+		return bootstrapRouteFacts{}, errRoute
 	}
-	if route.Model != nil && route.CatalogDeclarationOf() == registry.CatalogDeclarationNone {
-		// The channel's wire protocol is a fact of the route: a claude channel
-		// route speaks Anthropic Messages regardless of any catalog
-		// declaration, and a published projection may not carry empty
-		// protocols.
-		protocols := routeProtocols(route.Model.Protocols)
-		if len(protocols) == 0 && route.RouteChannel == "claude" {
-			protocols = []string{"anthropic_messages"}
-		}
+	if route.CatalogDeclarationOf() == registry.CatalogDeclarationNone {
 		return bootstrapRouteFacts{
-			routeKey: modelrouting.RouteKey{
-				ModelKey:     modelrouting.ModelKey{CatalogProviderID: route.RouteChannel, CanonicalModelID: route.RuntimeModelID},
-				RouteChannel: route.RouteChannel,
-			},
+			routeKey:               routeKey,
 			displayName:            route.Model.DisplayName,
 			catalogRouteProviderID: route.RouteChannel,
 			catalogRouteModelID:    route.RuntimeModelID,
-			protocols:              protocols,
+			protocols:              route.RoutingProtocols(),
 			selectionReason:        "route surfaced from its channel without catalog declaration",
 		}, nil
-	}
-	routeKey, errRoute := route.ModelRoutingKey(routeIndex)
-	if errRoute != nil {
-		return bootstrapRouteFacts{}, errRoute
 	}
 	return bootstrapRouteFacts{
 		routeKey:               routeKey,
@@ -324,7 +308,7 @@ func bootstrapFactsForRoute(route registry.RegisteredRouteSnapshot, routeIndex i
 		variantID:              strings.TrimSpace(route.Model.VariantID),
 		catalogRouteProviderID: route.Model.CatalogRouteProviderID,
 		catalogRouteModelID:    route.Model.CatalogRouteModelID,
-		protocols:              routeProtocols(route.Model.Protocols),
+		protocols:              route.RoutingProtocols(),
 		selectionReason:        "route facts were discovered from the runtime registry",
 	}, nil
 }

@@ -325,6 +325,88 @@ func TestModelRoutingBootstrapSelectorExecutesRegistryRouteBeforeProjection(t *t
 	}
 }
 
+// A route whose type declares no catalog facts (OpenCode, claude-api-key, ...)
+// is published by the inventory under its channel identity; the bootstrap
+// selector must resolve that same identity instead of refusing the route.
+func TestModelRoutingBootstrapSelectorExecutesSurfacedRoute(t *testing.T) {
+	routeChannel := "surfaced-route-" + uuid.NewString()
+	credentialID := "surfaced-credential-" + uuid.NewString()
+	runtimeModelID := "surfaced-model-" + uuid.NewString()
+	routeKey := modelrouting.RouteKey{
+		ModelKey:     modelrouting.ModelKey{CatalogProviderID: routeChannel, CanonicalModelID: runtimeModelID},
+		RouteChannel: routeChannel,
+	}
+	selector := modelrouting.SelectorForRoute(routeKey, runtimeModelID)
+
+	executor := &modelRoutingAttemptExecutor{identifier: routeChannel}
+	manager := NewManager(nil, nil, NoopHook{})
+	manager.RegisterExecutor(executor)
+	_, errRegister := manager.Register(context.Background(), &Auth{
+		ID: credentialID, Provider: routeChannel, RouteChannel: routeChannel, QuotaDomain: routeChannel + "-quota", Status: StatusActive,
+		Attributes: map[string]string{AttributeAuthKind: "api_key"},
+	})
+	if errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credentialID, routeChannel, []*registry.ModelInfo{{
+		ID: runtimeModelID, Protocols: []string{"openai_chat"},
+	}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(credentialID) })
+
+	opts := modelRoutingOptions()
+	opts.Headers.Set(probeRouteSelectorHeader, selector)
+	response, errExecute := manager.Execute(
+		context.Background(), []string{routeChannel},
+		cliproxyexecutor.Request{Model: runtimeModelID, Payload: []byte(`{"messages":[]}`)}, opts,
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() surfaced bootstrap selector error = %v", errExecute)
+	}
+	if executor.executeCalls.Load() != 1 {
+		t.Fatalf("surfaced route executions = %d, want 1", executor.executeCalls.Load())
+	}
+	if got := response.DownstreamHeaders.Get(probeRouteSelectorHeader); got != selector {
+		t.Fatalf("surfaced selector evidence = %q, want %q", got, selector)
+	}
+}
+
+func TestModelRoutingBootstrapSelectorRefusesSurfacedRouteWithoutProtocols(t *testing.T) {
+	routeChannel := "surfaced-route-" + uuid.NewString()
+	credentialID := "surfaced-credential-" + uuid.NewString()
+	runtimeModelID := "surfaced-model-" + uuid.NewString()
+	routeKey := modelrouting.RouteKey{
+		ModelKey:     modelrouting.ModelKey{CatalogProviderID: routeChannel, CanonicalModelID: runtimeModelID},
+		RouteChannel: routeChannel,
+	}
+	selector := modelrouting.SelectorForRoute(routeKey, runtimeModelID)
+
+	executor := &modelRoutingAttemptExecutor{identifier: routeChannel}
+	manager := NewManager(nil, nil, NoopHook{})
+	manager.RegisterExecutor(executor)
+	_, errRegister := manager.Register(context.Background(), &Auth{
+		ID: credentialID, Provider: routeChannel, RouteChannel: routeChannel, QuotaDomain: routeChannel + "-quota", Status: StatusActive,
+		Attributes: map[string]string{AttributeAuthKind: "api_key"},
+	})
+	if errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credentialID, routeChannel, []*registry.ModelInfo{{ID: runtimeModelID}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(credentialID) })
+
+	opts := modelRoutingOptions()
+	opts.Headers.Set(probeRouteSelectorHeader, selector)
+	_, errExecute := manager.Execute(
+		context.Background(), []string{routeChannel},
+		cliproxyexecutor.Request{Model: runtimeModelID, Payload: []byte(`{"messages":[]}`)}, opts,
+	)
+	if errExecute == nil || !strings.Contains(errExecute.Error(), "registered route serves no wire protocol") {
+		t.Fatalf("Execute() error = %v, want the no-protocol refusal", errExecute)
+	}
+	if executor.executeCalls.Load() != 0 {
+		t.Fatalf("surfaced route executions = %d, want 0", executor.executeCalls.Load())
+	}
+}
+
 func TestModelRoutingBootstrapSelectorFailsLoudlyForIncompleteRouteFacts(t *testing.T) {
 	routeChannel := "bootstrap-route-" + uuid.NewString()
 	credentialID := "bootstrap-credential-" + uuid.NewString()
