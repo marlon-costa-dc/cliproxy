@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -609,6 +610,11 @@ func TestModelInventoryReportsRegisteredRoutesTheProjectionDoesNotDescribe(t *te
 		{ID: "later-model", VariantID: "high", Protocols: []string{"openai_chat"},
 			CatalogProviderID: "opencode", CatalogModelID: "later-model",
 			CatalogRouteProviderID: "opencode", CatalogRouteModelID: "later-model"},
+		// A gateway route declaring a canonical model whose provider sorts
+		// before the projected one: the merged inventory must still be ordered.
+		{ID: "early-model", Protocols: []string{"openai_chat"},
+			CatalogProviderID: "deepseek", CatalogModelID: "early-model",
+			CatalogRouteProviderID: "opencode", CatalogRouteModelID: "early-model"},
 	})
 	t.Cleanup(func() {
 		reg.UnregisterClient("credential-a")
@@ -651,6 +657,17 @@ func TestModelInventoryReportsRegisteredRoutesTheProjectionDoesNotDescribe(t *te
 	if !later.Active || len(later.Routes) != 1 || len(later.Routes[0].Credentials) != 1 || len(later.Variants) != 1 {
 		t.Fatalf("later model lost its credential or variant: %+v", later)
 	}
+	early, okEarly := routes["opencode/early-model"]
+	if !okEarly || early.ModelKey.CatalogProviderID != "deepseek" || early.ModelKey.CanonicalModelID != "early-model" {
+		t.Fatalf("gateway route with a declared canonical model is missing or misidentified: %+v", inventory.DirectModels)
+	}
+	keys := make([]string, 0, len(inventory.DirectModels))
+	for _, model := range inventory.DirectModels {
+		keys = append(keys, model.ModelKey.CatalogProviderID+"\x00"+model.ModelKey.CanonicalModelID)
+	}
+	if !sort.StringsAreSorted(keys) {
+		t.Fatalf("direct models are not ordered by identity: %q", keys)
+	}
 }
 
 // A route that joins a model the projection already describes brings the
@@ -675,6 +692,9 @@ func TestMergeRegistryRoutesKeepsVariantsOfJoiningRoutes(t *testing.T) {
 	merged := mergeRegistryRoutes(projected, registryModels)
 	if len(merged) != 1 || len(merged[0].Routes) != 2 || len(merged[0].Variants) != 2 || !merged[0].Active {
 		t.Fatalf("merged model = %+v, want one model with both routes and both variants", merged)
+	}
+	if merged[0].Routes[0].RouteKey.RouteChannel != "codex" || merged[0].Variants[0].VariantKey.VariantID != "high" {
+		t.Fatalf("merged model = %+v, want routes and variants in identity order", merged[0])
 	}
 }
 
