@@ -1766,3 +1766,52 @@ func TestScheduleProcessEventsStopsOnContextDone(t *testing.T) {
 func hexString(data []byte) string {
 	return strings.ToLower(fmt.Sprintf("%x", data))
 }
+
+func TestConfigReloadSurvivesAtomicReplace(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	replace := func(content string) {
+		candidate := configPath + ".candidate"
+		if err := os.WriteFile(candidate, []byte(content), 0o600); err != nil {
+			t.Fatalf("failed to write candidate: %v", err)
+		}
+		if err := os.Rename(candidate, configPath); err != nil {
+			t.Fatalf("failed to replace config: %v", err)
+		}
+	}
+	replace("auth-dir: " + authDir + "\nport: 8317\n")
+
+	var reloads int32
+	w, err := NewWatcher(configPath, authDir, func(*config.Config) {
+		atomic.AddInt32(&reloads, 1)
+	})
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+	w.SetConfig(&config.Config{AuthDir: authDir})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("expected Start to succeed: %v", err)
+	}
+	defer w.Stop()
+
+	waitFor := func(want int32) {
+		deadline := time.Now().Add(10 * time.Second)
+		for atomic.LoadInt32(&reloads) < want {
+			if time.Now().After(deadline) {
+				t.Fatalf("expected %d reloads, got %d", want, atomic.LoadInt32(&reloads))
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	start := atomic.LoadInt32(&reloads)
+	replace("auth-dir: " + authDir + "\nport: 8318\n")
+	waitFor(start + 1)
+	replace("auth-dir: " + authDir + "\nport: 8319\n")
+	waitFor(start + 2)
+}
