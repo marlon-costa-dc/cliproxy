@@ -657,6 +657,10 @@ func TestModelInventoryReportsRegisteredRoutesTheProjectionDoesNotDescribe(t *te
 	if !later.Active || len(later.Routes) != 1 || len(later.Routes[0].Credentials) != 1 || len(later.Variants) != 1 {
 		t.Fatalf("later model lost its credential or variant: %+v", later)
 	}
+	early, okEarly := routes["opencode/early-model"]
+	if !okEarly || early.ModelKey.CatalogProviderID != "deepseek" || early.ModelKey.CanonicalModelID != "early-model" {
+		t.Fatalf("gateway route with a declared canonical model is missing or misidentified: %+v", inventory.DirectModels)
+	}
 	keys := make([]string, 0, len(inventory.DirectModels))
 	for _, model := range inventory.DirectModels {
 		keys = append(keys, model.ModelKey.CatalogProviderID+"\x00"+model.ModelKey.CanonicalModelID)
