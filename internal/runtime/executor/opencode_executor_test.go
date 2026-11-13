@@ -412,8 +412,8 @@ func TestOpenCodeExecutor_DelegatedMessagesSendMetadataKey(t *testing.T) {
 	if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
-	if gotAuth != "Bearer metadata-key" && gotXAPIKey != "metadata-key" {
-		t.Fatalf("delegated request authentication = (Authorization %q, X-Api-Key %q), want the metadata key", gotAuth, gotXAPIKey)
+	if gotXAPIKey != "metadata-key" || gotAuth != "" {
+		t.Fatalf("delegated request authentication = (Authorization %q, X-Api-Key %q), want x-api-key with the metadata key", gotAuth, gotXAPIKey)
 	}
 	if _, leaked := auth.Attributes["api_key"]; leaked {
 		t.Fatal("request key leaked into the shared auth attributes")
