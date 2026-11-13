@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	clipoauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -285,5 +286,83 @@ func TestOpenCodeExecutor_NilAuthClone(t *testing.T) {
 	cloned := exec.cloneAuthWithBaseURL(nil)
 	if cloned != nil {
 		t.Fatalf("expected nil, got %v", cloned)
+	}
+}
+
+// openCodeSessionServer answers both the chat and messages paths and records
+// the X-Opencode-Session header each upstream request carried.
+func openCodeSessionServer(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	seen := &[]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Header.Get("X-Opencode-Session"))
+		if r.URL.Path == "/v1/messages" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			for _, frame := range []string{
+				"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":"end_turn","usage":{"output_tokens":5,"input_tokens":5}}}`,
+				"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
+				"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+				"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}`,
+				"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"input_tokens":5}}`,
+				"event: message_stop\n" + `data: {"type":"message_stop"}`,
+				"data: [DONE]",
+			} {
+				_, _ = w.Write([]byte(frame + "\n\n"))
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"c-1","object":"chat.completion","choices":[{"index":0,"message":{"content":"OK","role":"assistant"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, seen
+}
+
+func TestOpenCodeExecutor_SendsConversationSession(t *testing.T) {
+	derived := map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:probe"}
+	wantDerived := helps.ProviderSessionUUID(constant.OpenCodeGo, derived)
+	if wantDerived == "" {
+		t.Fatal("derived provider session must not be empty")
+	}
+	cases := []struct {
+		name     string
+		model    string
+		metadata map[string]any
+		headers  http.Header
+		want     string
+	}{
+		{"chat-derived", "deepseek-v4-pro", derived, nil, wantDerived},
+		{"messages-derived", "claude-opus-5", derived, nil, wantDerived},
+		{"chat-client-session-wins", "deepseek-v4-pro", derived, http.Header{"X-Opencode-Session": {"client-session-1"}}, "client-session-1"},
+		{"chat-client-header-of-another-agent", "deepseek-v4-pro", nil, http.Header{"X-Session-Id": {"agent-session-2"}}, "agent-session-2"},
+		{"chat-no-identity", "deepseek-v4-pro", nil, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, seen := openCodeSessionServer(t)
+			exec := NewOpenCodeExecutor(constant.OpenCodeGo)
+			exec.cfg = &config.Config{}
+			auth := &clipoauth.Auth{
+				Provider:   constant.OpenCodeGo,
+				Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
+			}
+			req := cliproxyexecutor.Request{
+				Model:    tc.model,
+				Payload:  []byte(`{"model":"` + tc.model + `","messages":[{"role":"user","content":"Respond with OK."}]}`),
+				Metadata: tc.metadata,
+			}
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Headers: tc.headers}
+			if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
+			if len(*seen) != 1 || (*seen)[0] != tc.want {
+				t.Fatalf("upstream X-Opencode-Session = %q, want [%q]", *seen, tc.want)
+			}
+			if _, leaked := auth.Attributes["header:X-Opencode-Session"]; leaked {
+				t.Fatal("request session leaked into the shared auth attributes")
+			}
+		})
 	}
 }
