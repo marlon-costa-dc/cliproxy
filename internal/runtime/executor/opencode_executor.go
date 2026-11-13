@@ -84,6 +84,27 @@ func (e *OpenCodeExecutor) cloneAuthWithBaseURL(auth *clipoauth.Auth) *clipoauth
 	return &cloned
 }
 
+// openCodeSessionHeader is the conversation identity OpenCode gateways route
+// and cache by; OpenCode Go rejects a request without it (MissingSessionID).
+const openCodeSessionHeader = "X-Opencode-Session"
+
+// requestAuth clones auth for one request and carries the conversation's
+// OpenCode session as a header attribute, so every protocol path - including
+// the delegated Claude and Gemini executors - sends it upstream. The session is
+// the identity credential affinity already selected by, mapped to a
+// provider-scoped UUID so no client-supplied identifier leaves verbatim.
+func (e *OpenCodeExecutor) requestAuth(auth *clipoauth.Auth, opts cliproxyexecutor.Options) *clipoauth.Auth {
+	cloned := e.cloneAuthWithBaseURL(auth)
+	if cloned == nil {
+		return nil
+	}
+	sessionID := helps.AffinitySessionUUID(e.id, clipoauth.ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata))
+	if sessionID != "" {
+		cloned.Attributes["header:"+openCodeSessionHeader] = sessionID
+	}
+	return cloned
+}
+
 func (e *OpenCodeExecutor) resolveRoute(modelID string) (protocol string, url string, err error) {
 	protocol = registry.ResolveOpenCodeProtocol(e.gateway, modelID)
 	if protocol == "" {
@@ -99,7 +120,7 @@ func (e *OpenCodeExecutor) Execute(ctx context.Context, auth *clipoauth.Auth, re
 	if errRoute != nil {
 		return cliproxyexecutor.Response{}, errRoute
 	}
-	clonedAuth := e.cloneAuthWithBaseURL(auth)
+	clonedAuth := e.requestAuth(auth, opts)
 	baseURL := strings.TrimSuffix(clonedAuth.Attributes["base_url"], "/")
 
 	log.Debugf("opencode executor [%s]: model=%q protocol=%q path=%s", e.gateway, baseModel, protocol, path)
@@ -127,7 +148,7 @@ func (e *OpenCodeExecutor) ExecuteStream(ctx context.Context, auth *clipoauth.Au
 	if errRoute != nil {
 		return nil, errRoute
 	}
-	clonedAuth := e.cloneAuthWithBaseURL(auth)
+	clonedAuth := e.requestAuth(auth, opts)
 	baseURL := strings.TrimSuffix(clonedAuth.Attributes["base_url"], "/")
 
 	log.Debugf("opencode executor [%s]: stream model=%q protocol=%q path=%s", e.gateway, baseModel, protocol, path)

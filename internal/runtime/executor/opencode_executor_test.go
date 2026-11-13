@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	clipoauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -285,5 +286,93 @@ func TestOpenCodeExecutor_NilAuthClone(t *testing.T) {
 	cloned := exec.cloneAuthWithBaseURL(nil)
 	if cloned != nil {
 		t.Fatalf("expected nil, got %v", cloned)
+	}
+}
+
+// openCodeSessionServer answers both the chat and messages paths and records
+// the X-Opencode-Session header each upstream request carried.
+func openCodeSessionServer(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	seen := &[]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Header.Get("X-Opencode-Session"))
+		if r.URL.Path == "/v1/messages" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			for _, frame := range []string{
+				"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":"end_turn","usage":{"output_tokens":5,"input_tokens":5}}}`,
+				"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
+				"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+				"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}`,
+				"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"input_tokens":5}}`,
+				"event: message_stop\n" + `data: {"type":"message_stop"}`,
+				"data: [DONE]",
+			} {
+				_, _ = w.Write([]byte(frame + "\n\n"))
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":"c-1","object":"chat.completion","choices":[{"index":0,"message":{"content":"OK","role":"assistant"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, seen
+}
+
+func TestOpenCodeExecutor_SendsConversationSession(t *testing.T) {
+	derived := map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:probe"}
+	send := func(t *testing.T, model string, metadata map[string]any, headers http.Header) string {
+		t.Helper()
+		server, seen := openCodeSessionServer(t)
+		exec := NewOpenCodeExecutor(constant.OpenCodeGo)
+		exec.cfg = &config.Config{}
+		auth := &clipoauth.Auth{
+			Provider:   constant.OpenCodeGo,
+			Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
+		}
+		payload := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"Respond with OK."}]}`)
+		req := cliproxyexecutor.Request{Model: model, Payload: payload, Metadata: metadata}
+		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Headers: headers, OriginalRequest: payload, Metadata: metadata}
+		if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		if len(*seen) != 1 {
+			t.Fatalf("upstream requests = %d, want 1", len(*seen))
+		}
+		if _, leaked := auth.Attributes["header:X-Opencode-Session"]; leaked {
+			t.Fatal("request session leaked into the shared auth attributes")
+		}
+		if _, err := uuid.Parse((*seen)[0]); err != nil {
+			t.Fatalf("upstream X-Opencode-Session = %q, want a UUID: %v", (*seen)[0], err)
+		}
+		return (*seen)[0]
+	}
+
+	chat := send(t, "deepseek-v4-pro", derived, nil)
+	if messages := send(t, "claude-opus-5", derived, nil); messages != chat {
+		t.Fatalf("one conversation sent two sessions: chat %q, messages %q", chat, messages)
+	}
+	if other := send(t, "deepseek-v4-pro", map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:other"}, nil); other == chat {
+		t.Fatalf("two conversations shared session %q", chat)
+	}
+	// A request with no declared or derived identity still carries a session:
+	// the gateway rejects one without it.
+	send(t, "deepseek-v4-pro", nil, nil)
+
+	// A session the client declared selects the upstream session, whatever
+	// header it used and whatever characters it holds, and never leaves verbatim.
+	for _, headers := range []http.Header{
+		{"X-Opencode-Session": {"client-session-1"}},
+		{"X-Session-Id": {"agent-session-2"}},
+		{"X-Opencode-Session": {"$X-Session-Id"}},
+	} {
+		declared := send(t, "deepseek-v4-pro", derived, headers)
+		if declared == chat {
+			t.Fatalf("declared session %v did not select the upstream session", headers)
+		}
+		if again := send(t, "deepseek-v4-pro", nil, headers); again != declared {
+			t.Fatalf("declared session %v is not stable: %q then %q", headers, declared, again)
+		}
 	}
 }
