@@ -37,7 +37,7 @@
 
 # AGENTS.md — cliproxy
 
-> Packaged governance `agents-governance` `0.6.3` owns the capability indexes: 71 agents, 111 rules, 141 skills. Consume them through `GovernanceBundle`; do not copy their bodies here.
+> Packaged governance `agents-governance` `0.6.3` owns the capability indexes: 71 agents, 112 rules, 141 skills. Consume them through `GovernanceBundle`; do not copy their bodies here.
 
 <!-- AIHUB-AGENTS-SCOPE-LOCAL-BEGIN -->
 # AGENTS.md
