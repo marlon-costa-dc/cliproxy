@@ -133,43 +133,34 @@ func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (clipro
 }
 
 func hasExplicitSession(headers map[string][]string, payload []byte) bool {
-	return ExplicitID(headers, payload) != ""
-}
-
-// ExplicitID returns the session identifier the client declared itself, from
-// its session headers first and then from the request payload, or "" when the
-// client declared none.
-func ExplicitID(headers map[string][]string, payload []byte) string {
 	for _, header := range []string{"X-Opencode-Session", "X-Claude-Code-Session-Id", "X-Session-ID", "Session-Id", "Session_id", "X-Session-Affinity", "X-Client-Request-Id"} {
-		if value := headerValue(headers, header); value != "" {
-			return value
+		if NormalizeExplicitID(headerValue(headers, header)) != "" {
+			return true
 		}
 	}
 	if len(payload) == 0 {
-		return ""
+		return false
 	}
 	// Parsing without copying matters here: this runs on every request and the
 	// payload can be multiple megabytes.
 	root := util.ParseGJSONBytesNoCopy(payload)
 	for _, path := range []string{"session_id", "sessionId", "conversation_id", "prompt_cache_key"} {
-		if value := NormalizeExplicitID(root.Get(path).String()); value != "" {
-			return value
+		if NormalizeExplicitID(root.Get(path).String()) != "" {
+			return true
 		}
 	}
-	if value := ClaudeMetadataSessionID(payload); value != "" {
-		return value
+	if ClaudeMetadataSessionID(payload) != "" {
+		return true
 	}
-	if value := NormalizeExplicitID(root.Get("metadata.user_id").String()); value != "" {
-		return value
+	userID := strings.TrimSpace(root.Get("metadata.user_id").String())
+	if NormalizeExplicitID(userID) != "" {
+		return true
 	}
 	conversation := root.Get("conversation")
-	if value := NormalizeExplicitID(conversation.Get("id").String()); value != "" {
-		return value
+	if NormalizeExplicitID(conversation.Get("id").String()) != "" {
+		return true
 	}
-	if conversation.Type == gjson.String {
-		return NormalizeExplicitID(conversation.String())
-	}
-	return ""
+	return conversation.Type == gjson.String && NormalizeExplicitID(conversation.String()) != ""
 }
 
 func headerValue(headers map[string][]string, name string) string {

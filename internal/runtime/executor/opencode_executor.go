@@ -17,7 +17,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	clipoauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/sjson"
@@ -91,18 +90,15 @@ const openCodeSessionHeader = "X-Opencode-Session"
 
 // requestAuth clones auth for one request and carries the conversation's
 // OpenCode session as a header attribute, so every protocol path - including
-// the delegated Claude and Gemini executors - sends it upstream. A session the
-// client declared wins; otherwise the stable provider session derived from the
-// conversation is used.
-func (e *OpenCodeExecutor) requestAuth(auth *clipoauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) *clipoauth.Auth {
+// the delegated Claude and Gemini executors - sends it upstream. The session is
+// the identity credential affinity already selected by, mapped to a
+// provider-scoped UUID so no client-supplied identifier leaves verbatim.
+func (e *OpenCodeExecutor) requestAuth(auth *clipoauth.Auth, opts cliproxyexecutor.Options) *clipoauth.Auth {
 	cloned := e.cloneAuthWithBaseURL(auth)
 	if cloned == nil {
 		return nil
 	}
-	sessionID := cliproxysession.ExplicitID(opts.Headers, opts.OriginalRequest)
-	if sessionID == "" {
-		sessionID = helps.ProviderSessionUUID(e.id, opts.Metadata, req.Metadata)
-	}
+	sessionID := helps.AffinitySessionUUID(e.id, clipoauth.ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata))
 	if sessionID != "" {
 		cloned.Attributes["header:"+openCodeSessionHeader] = sessionID
 	}
@@ -124,7 +120,7 @@ func (e *OpenCodeExecutor) Execute(ctx context.Context, auth *clipoauth.Auth, re
 	if errRoute != nil {
 		return cliproxyexecutor.Response{}, errRoute
 	}
-	clonedAuth := e.requestAuth(auth, req, opts)
+	clonedAuth := e.requestAuth(auth, opts)
 	baseURL := strings.TrimSuffix(clonedAuth.Attributes["base_url"], "/")
 
 	log.Debugf("opencode executor [%s]: model=%q protocol=%q path=%s", e.gateway, baseModel, protocol, path)
@@ -152,7 +148,7 @@ func (e *OpenCodeExecutor) ExecuteStream(ctx context.Context, auth *clipoauth.Au
 	if errRoute != nil {
 		return nil, errRoute
 	}
-	clonedAuth := e.requestAuth(auth, req, opts)
+	clonedAuth := e.requestAuth(auth, opts)
 	baseURL := strings.TrimSuffix(clonedAuth.Attributes["base_url"], "/")
 
 	log.Debugf("opencode executor [%s]: stream model=%q protocol=%q path=%s", e.gateway, baseModel, protocol, path)

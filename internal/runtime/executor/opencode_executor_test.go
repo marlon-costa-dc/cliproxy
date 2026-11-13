@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	clipoauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -322,47 +322,57 @@ func openCodeSessionServer(t *testing.T) (*httptest.Server, *[]string) {
 
 func TestOpenCodeExecutor_SendsConversationSession(t *testing.T) {
 	derived := map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:probe"}
-	wantDerived := helps.ProviderSessionUUID(constant.OpenCodeGo, derived)
-	if wantDerived == "" {
-		t.Fatal("derived provider session must not be empty")
+	send := func(t *testing.T, model string, metadata map[string]any, headers http.Header) string {
+		t.Helper()
+		server, seen := openCodeSessionServer(t)
+		exec := NewOpenCodeExecutor(constant.OpenCodeGo)
+		exec.cfg = &config.Config{}
+		auth := &clipoauth.Auth{
+			Provider:   constant.OpenCodeGo,
+			Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
+		}
+		payload := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"Respond with OK."}]}`)
+		req := cliproxyexecutor.Request{Model: model, Payload: payload, Metadata: metadata}
+		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Headers: headers, OriginalRequest: payload, Metadata: metadata}
+		if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		if len(*seen) != 1 {
+			t.Fatalf("upstream requests = %d, want 1", len(*seen))
+		}
+		if _, leaked := auth.Attributes["header:X-Opencode-Session"]; leaked {
+			t.Fatal("request session leaked into the shared auth attributes")
+		}
+		if _, err := uuid.Parse((*seen)[0]); err != nil {
+			t.Fatalf("upstream X-Opencode-Session = %q, want a UUID: %v", (*seen)[0], err)
+		}
+		return (*seen)[0]
 	}
-	cases := []struct {
-		name     string
-		model    string
-		metadata map[string]any
-		headers  http.Header
-		want     string
-	}{
-		{"chat-derived", "deepseek-v4-pro", derived, nil, wantDerived},
-		{"messages-derived", "claude-opus-5", derived, nil, wantDerived},
-		{"chat-client-session-wins", "deepseek-v4-pro", derived, http.Header{"X-Opencode-Session": {"client-session-1"}}, "client-session-1"},
-		{"chat-client-header-of-another-agent", "deepseek-v4-pro", nil, http.Header{"X-Session-Id": {"agent-session-2"}}, "agent-session-2"},
-		{"chat-no-identity", "deepseek-v4-pro", nil, nil, ""},
+
+	chat := send(t, "deepseek-v4-pro", derived, nil)
+	if messages := send(t, "claude-opus-5", derived, nil); messages != chat {
+		t.Fatalf("one conversation sent two sessions: chat %q, messages %q", chat, messages)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			server, seen := openCodeSessionServer(t)
-			exec := NewOpenCodeExecutor(constant.OpenCodeGo)
-			exec.cfg = &config.Config{}
-			auth := &clipoauth.Auth{
-				Provider:   constant.OpenCodeGo,
-				Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
-			}
-			req := cliproxyexecutor.Request{
-				Model:    tc.model,
-				Payload:  []byte(`{"model":"` + tc.model + `","messages":[{"role":"user","content":"Respond with OK."}]}`),
-				Metadata: tc.metadata,
-			}
-			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Headers: tc.headers}
-			if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
-				t.Fatalf("Execute error: %v", err)
-			}
-			if len(*seen) != 1 || (*seen)[0] != tc.want {
-				t.Fatalf("upstream X-Opencode-Session = %q, want [%q]", *seen, tc.want)
-			}
-			if _, leaked := auth.Attributes["header:X-Opencode-Session"]; leaked {
-				t.Fatal("request session leaked into the shared auth attributes")
-			}
-		})
+	if other := send(t, "deepseek-v4-pro", map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:other"}, nil); other == chat {
+		t.Fatalf("two conversations shared session %q", chat)
+	}
+	// A request with no declared or derived identity still carries a session:
+	// the gateway rejects one without it.
+	send(t, "deepseek-v4-pro", nil, nil)
+
+	// A session the client declared selects the upstream session, whatever
+	// header it used and whatever characters it holds, and never leaves verbatim.
+	for _, headers := range []http.Header{
+		{"X-Opencode-Session": {"client-session-1"}},
+		{"X-Session-Id": {"agent-session-2"}},
+		{"X-Opencode-Session": {"$X-Session-Id"}},
+	} {
+		declared := send(t, "deepseek-v4-pro", derived, headers)
+		if declared == chat {
+			t.Fatalf("declared session %v did not select the upstream session", headers)
+		}
+		if again := send(t, "deepseek-v4-pro", nil, headers); again != declared {
+			t.Fatalf("declared session %v is not stable: %q then %q", headers, declared, again)
+		}
 	}
 }

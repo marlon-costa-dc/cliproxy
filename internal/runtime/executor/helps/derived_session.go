@@ -36,6 +36,12 @@ func ProviderSessionUUID(provider string, metadataSets ...map[string]any) string
 	return DerivedSessionUUID(provider, metadataSets...)
 }
 
+// AffinitySessionUUID maps a session-affinity identity to a provider-scoped
+// stable UUID, so no client-supplied identifier leaves the proxy verbatim.
+func AffinitySessionUUID(provider string, sessionID string) string {
+	return stableProviderSessionUUID(provider, "affinity-session", sessionID)
+}
+
 func stableProviderSessionUUID(provider string, kind string, identityValue string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	identityValue = strings.TrimSpace(identityValue)

@@ -1158,6 +1158,9 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 	if sid := sessionHeaderValue(headers, "Session_id"); sid != "" {
 		return "codex:" + sid, ""
 	}
+	if sid := sessionHeaderValue(headers, "X-Opencode-Session"); sid != "" {
+		return "opencode:" + sid, ""
+	}
 	if sid := sessionHeaderValue(headers, "X-Session-ID"); sid != "" {
 		return "header:" + sid, ""
 	}
