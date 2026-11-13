@@ -215,7 +215,7 @@ func RemoveTopLevelKeyPreserveComments(configFile string, key string) error {
 	if errClose := encoder.Close(); errClose != nil {
 		return errClose
 	}
-	return WriteConfigAtomicExact(configFile, NormalizeCommentIndentation(buf.Bytes()))
+	return WriteConfigAtomicExact(configFile, buf.Bytes())
 }
 
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
