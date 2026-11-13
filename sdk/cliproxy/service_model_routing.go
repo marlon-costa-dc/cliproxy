@@ -13,6 +13,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -221,7 +222,19 @@ func (s *Service) initializeModelRouting() error {
 	}
 	prepared, errPrepare := s.coreManager.PrepareModelRouting(s.cfg.ModelRouting)
 	if errPrepare != nil {
-		return fmt.Errorf("prepare initial model-routing runtime: %w", errPrepare)
+		// A persisted projection the live credentials no longer satisfy (a
+		// rotated or removed key) is refused, never served: the proxy starts
+		// with no active generation, so the publisher bootstraps a fresh one
+		// through the CAS endpoint, and every other route keeps working.
+		log.Errorf("persisted model-routing generation %d is not activated: %v", s.cfg.ModelRouting.Generation, errPrepare)
+		s.cfgMu.Lock()
+		s.cfg = configWithoutModelRouting(s.cfg)
+		s.cfgMu.Unlock()
+		unrouted, errUnrouted := s.coreManager.PrepareModelRouting(nil)
+		if errUnrouted != nil {
+			return errUnrouted
+		}
+		return s.coreManager.ActivatePreparedModelRouting(unrouted)
 	}
 	if errActivate := s.coreManager.ActivatePreparedModelRouting(prepared); errActivate != nil {
 		return fmt.Errorf("activate initial model-routing runtime: %w", errActivate)
