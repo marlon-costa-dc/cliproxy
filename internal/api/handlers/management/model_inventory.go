@@ -122,7 +122,34 @@ func mergeRegistryRoutes(projected, registryModels []modelrouting.InventoryModel
 		byKey[model.ModelKey] = len(merged)
 		merged = append(merged, model)
 	}
+	for index := range merged {
+		sortInventoryModel(&merged[index])
+	}
+	sortInventoryModels(merged)
 	return merged
+}
+
+// sortInventoryModel orders one model's routes by channel and its variants by
+// identity, the order the inventory contract requires of every model.
+func sortInventoryModel(model *modelrouting.InventoryModel) {
+	sort.Slice(model.Routes, func(i, j int) bool {
+		return model.Routes[i].RouteKey.RouteChannel < model.Routes[j].RouteKey.RouteChannel
+	})
+	sort.Slice(model.Variants, func(i, j int) bool {
+		return model.Variants[i].VariantKey.VariantID < model.Variants[j].VariantKey.VariantID
+	})
+}
+
+// sortInventoryModels orders models by identity: catalog provider, then
+// canonical model. Consumers reject an inventory in any other order.
+func sortInventoryModels(models []modelrouting.InventoryModel) {
+	sort.Slice(models, func(i, j int) bool {
+		left, right := models[i].ModelKey, models[j].ModelKey
+		if left.CatalogProviderID != right.CatalogProviderID {
+			return left.CatalogProviderID < right.CatalogProviderID
+		}
+		return left.CanonicalModelID < right.CanonicalModelID
+	})
 }
 
 func projectedInventoryModels(projection *modelrouting.Config, registered []registry.RegisteredRouteSnapshot, auths map[string]*coreauth.Auth, now time.Time) []modelrouting.InventoryModel {
@@ -391,21 +418,10 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 			}
 			built.model.Active = built.model.Active || route.Selectable
 		}
-		sort.Slice(built.model.Routes, func(i, j int) bool {
-			return built.model.Routes[i].RouteKey.RouteChannel < built.model.Routes[j].RouteKey.RouteChannel
-		})
-		sort.Slice(built.model.Variants, func(i, j int) bool {
-			return built.model.Variants[i].VariantKey.VariantID < built.model.Variants[j].VariantKey.VariantID
-		})
+		sortInventoryModel(&built.model)
 		result = append(result, built.model)
 	}
-	sort.Slice(result, func(i, j int) bool {
-		left, right := result[i].ModelKey, result[j].ModelKey
-		if left.CatalogProviderID != right.CatalogProviderID {
-			return left.CatalogProviderID < right.CatalogProviderID
-		}
-		return left.CanonicalModelID < right.CanonicalModelID
-	})
+	sortInventoryModels(result)
 	return result, nil
 }
 
