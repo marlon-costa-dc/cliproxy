@@ -1785,9 +1785,11 @@ func TestConfigReloadSurvivesAtomicReplace(t *testing.T) {
 	}
 	replace("auth-dir: " + authDir + "\nport: 8317\n")
 
-	var reloads int32
-	w, err := NewWatcher(configPath, authDir, func(*config.Config) {
-		atomic.AddInt32(&reloads, 1)
+	var loadedPort atomic.Int64
+	w, err := NewWatcher(configPath, authDir, func(cfg *config.Config) {
+		if cfg != nil {
+			loadedPort.Store(int64(cfg.Port))
+		}
 	})
 	if err != nil {
 		t.Fatalf("failed to create watcher: %v", err)
@@ -1800,18 +1802,17 @@ func TestConfigReloadSurvivesAtomicReplace(t *testing.T) {
 	}
 	defer w.Stop()
 
-	waitFor := func(want int32) {
+	waitForPort := func(want int64) {
 		deadline := time.Now().Add(10 * time.Second)
-		for atomic.LoadInt32(&reloads) < want {
+		for loadedPort.Load() != want {
 			if time.Now().After(deadline) {
-				t.Fatalf("expected %d reloads, got %d", want, atomic.LoadInt32(&reloads))
+				t.Fatalf("expected the reloaded config to carry port %d, got %d", want, loadedPort.Load())
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	start := atomic.LoadInt32(&reloads)
 	replace("auth-dir: " + authDir + "\nport: 8318\n")
-	waitFor(start + 1)
+	waitForPort(8318)
 	replace("auth-dir: " + authDir + "\nport: 8319\n")
-	waitFor(start + 2)
+	waitForPort(8319)
 }

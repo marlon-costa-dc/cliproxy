@@ -28,20 +28,22 @@ func matchProvider(provider string, targets []string) (string, bool) {
 }
 
 func (w *Watcher) start(ctx context.Context) error {
-	// The config is replaced atomically (written beside it, then renamed onto
-	// it). A watch on the file follows the replaced inode and goes silent after
-	// the first replace, so the parent directory is watched and handleEvent
-	// keeps only events naming the config path.
-	if _, errStat := os.Stat(w.configPath); errStat != nil {
-		log.Errorf("failed to watch config file %s: %v", w.configPath, errStat)
-		return errStat
-	}
-	configDir := filepath.Dir(w.configPath)
-	if errAddConfig := w.watcher.Add(configDir); errAddConfig != nil {
-		log.Errorf("failed to watch config directory %s: %v", configDir, errAddConfig)
+	// The file watch sees in-place writes, including those to a single-file
+	// bind mount, whose events never reach the container's directory. An atomic
+	// replace (written beside the file, then renamed onto it) moves the watched
+	// inode away, so the parent directory is watched too; handleEvent keeps
+	// only events naming the config path and the reload debounce absorbs the
+	// duplicate.
+	if errAddConfig := w.watcher.Add(w.configPath); errAddConfig != nil {
+		log.Errorf("failed to watch config file %s: %v", w.configPath, errAddConfig)
 		return errAddConfig
 	}
-	log.Debugf("watching config file: %s (directory %s)", w.configPath, configDir)
+	configDir := filepath.Dir(w.configPath)
+	if errAddDir := w.watcher.Add(configDir); errAddDir != nil {
+		log.Errorf("failed to watch config directory %s: %v", configDir, errAddDir)
+		return errAddDir
+	}
+	log.Debugf("watching config file: %s (and directory %s)", w.configPath, configDir)
 
 	if errAddAuthDir := w.watcher.Add(w.authDir); errAddAuthDir != nil {
 		log.Errorf("failed to watch auth directory %s: %v", w.authDir, errAddAuthDir)
