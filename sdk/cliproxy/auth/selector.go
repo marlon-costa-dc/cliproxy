@@ -939,8 +939,21 @@ func collectAvailableByPriorityForRequest(ctx context.Context, auths []*Auth, mo
 	return available, cooldownCount, earliest
 }
 
-func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
-	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, false)
+func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, excluded ...map[string]struct{}) ([]*Auth, error) {
+	filtered := auths
+	if len(excluded) > 0 && len(excluded[0]) > 0 {
+		filtered = make([]*Auth, 0, len(auths))
+		for _, auth := range auths {
+			if auth == nil {
+				continue
+			}
+			if _, skip := excluded[0][auth.ID]; skip {
+				continue
+			}
+			filtered = append(filtered, auth)
+		}
+	}
+	return getAvailableAuthsWithPriorityMode(filtered, provider, model, now, false)
 }
 
 type prevalidatedAuthCandidatesKey struct{}
@@ -2792,4 +2805,38 @@ func extractResponsesAPIContent(content ojson.Result) string {
 // Deprecated: Use ExtractSessionID instead.
 func extractSessionID(payload []byte) string {
 	return ExtractSessionID(nil, payload, nil)
+}
+
+func (s *SessionAffinitySelector) mergeSplitAliasGroupsCAS(cacheKey, fallbackKey string, authID string) bool {
+	var retainedF []string
+	var deletedAuthF string
+	for attempt := 0; attempt < 3; attempt++ {
+		authP, genP, aliasesP, okP := s.cache.GetWithGeneration(cacheKey)
+		authF, genF, aliasesF, okF := s.cache.GetWithGeneration(fallbackKey)
+		if !okF {
+			aliasesF = retainedF
+		}
+		merged := mergeSessionAliases(aliasesP, aliasesF...)
+		merged = mergeSessionAliases(merged, cacheKey, fallbackKey)
+		if okF && authF != authID {
+			removed := s.cache.CompareAndDeleteGroup(fallbackKey, authF, genF, aliasesF)
+			if removed == nil {
+				continue
+			}
+			deletedAuthF = authF
+			retainedF = mergeSessionAliases(retainedF, removed...)
+		}
+		if okP {
+			if s.cache.CompareAndReplaceAliases(authP, genP, aliasesP, authID, merged...) {
+				return true
+			}
+			continue
+		}
+		s.cache.SetAliases(authID, merged...)
+		return true
+	}
+	if len(retainedF) > 0 && deletedAuthF != "" {
+		s.cache.RestoreAliasesIfAbsent(deletedAuthF, retainedF...)
+	}
+	return false
 }

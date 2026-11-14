@@ -32,6 +32,8 @@ type responsesWebsocketForwardOptions struct {
 	// websocketOwned reports whether this turn runs on an upstream
 	// websocket. While true, no interrupt may claim the local HTTP path.
 	websocketOwned func() bool
+	// keepAliveInterval overrides the keepalive cadence for this forwarded turn.
+	keepAliveInterval *time.Duration
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
