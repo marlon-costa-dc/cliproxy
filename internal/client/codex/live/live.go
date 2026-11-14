@@ -336,9 +336,6 @@ func (h *Handler) Handle(c *gin.Context) {
 		writeLiveError(c, clienterror.HTTPStatusFromErrorOr(errRequest, http.StatusBadGateway), errRequest.Error())
 		return
 	}
-	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
-		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", model)
-	}
 
 	var closeResponseOnce sync.Once
 	var closeResponseErr error
@@ -363,6 +360,10 @@ func (h *Handler) Handle(c *gin.Context) {
 	responseHeaders := callResponseHeaders(resp.Header)
 	helps.RecordAPIResponseMetadata(ctx, runtimeConfig, resp.StatusCode, responseHeaders)
 	responseBody, errResponse := readLimitedBody(resp.Body)
+	helps.AppendAPIResponseChunk(ctx, runtimeConfig, responseBody)
+	if resp.StatusCode == http.StatusUnauthorized {
+		h.authManager.ReportHomeUnauthorizedBody(ctx, selected, "codex", model, string(responseBody))
+	}
 	if errResponse != nil {
 		helps.RecordAPIResponseError(ctx, runtimeConfig, errResponse)
 		message := "Failed to read Codex live response"

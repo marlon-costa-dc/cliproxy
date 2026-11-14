@@ -410,6 +410,20 @@ func AppendCodexAPIWebsocketResponse(ctx context.Context, cfg *config.Config, pa
 	AppendAPIWebsocketResponse(ctx, cfg, payload)
 }
 
+// AppendAPIWebsocketBody stores the upstream rejected-handshake body bytes in
+// the websocket timeline so operators can see the original error.
+func AppendAPIWebsocketBody(ctx context.Context, cfg *config.Config, body []byte) {
+	if !requestLogCaptureEnabled(cfg) || len(body) == 0 {
+		return
+	}
+	ginCtx := ginContextFrom(ctx)
+	if ginCtx == nil {
+		return
+	}
+	markAPIResponseTimestamp(ginCtx)
+	appendAPIWebsocketTimeline(ginCtx, body)
+}
+
 // RecordAPIWebsocketError stores an upstream websocket error event in Gin context.
 func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage string, err error) {
 	if !requestLogCaptureEnabled(cfg) || err == nil {

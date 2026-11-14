@@ -148,15 +148,16 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 		writeRealtimeError(c, clienterror.HTTPStatusFromErrorOr(errRequest, http.StatusBadGateway), errRequest.Error(), "api_error", "realtime_upstream_unavailable")
 		return
 	}
-	if response.StatusCode == http.StatusUnauthorized {
-		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", session.model)
-	}
 	defer func() {
 		if errClose := response.Body.Close(); errClose != nil {
 			log.Errorf("codex realtime hangup: close response body error: %v", errClose)
 		}
 	}()
 	responseBody, errResponse := readLimitedBody(response.Body)
+	helps.AppendAPIResponseChunk(ctx, runtimeConfig, responseBody)
+	if response.StatusCode == http.StatusUnauthorized {
+		h.authManager.ReportHomeUnauthorizedBody(ctx, selected, "codex", session.model, string(responseBody))
+	}
 	if errResponse != nil {
 		helps.RecordAPIResponseError(ctx, runtimeConfig, errResponse)
 		writeRealtimeError(c, http.StatusBadGateway, "Failed to read Realtime hangup response", "api_error", "realtime_upstream_unavailable")

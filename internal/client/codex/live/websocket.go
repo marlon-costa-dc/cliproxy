@@ -128,23 +128,19 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 	upstream, handshakeResponse, errDial := dialUpstream(selected)
 	if errDial != nil && selection != nil && handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
 		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
-		closeHandshakeBody(handshakeResponse, "direct websocket unauthorized")
-		refreshed, didRefresh, errRefresh := h.authManager.RefreshHomeSelectionAfterUnauthorized(ctx, selection, selected)
-		if errRefresh != nil {
-			writeSelectionError(c, errRefresh)
-			return
-		}
-		if didRefresh && refreshed != nil {
-			selected = refreshed
-			logging.SetGinCPATraceID(c, selected.EnsureIndex())
-			upstream, handshakeResponse, errDial = dialUpstream(selected)
-		}
 	}
 	if errDial != nil {
 		status := clienterror.HTTPStatusFromErrorOr(errDial, http.StatusBadGateway)
 		if handshakeResponse != nil && handshakeResponse.StatusCode > 0 {
 			status = handshakeResponse.StatusCode
 			copyRealtimeHandshakeHeaders(c.Writer.Header(), handshakeResponse.Header)
+		}
+		if status == http.StatusUnauthorized && handshakeResponse != nil && handshakeResponse.Body != nil {
+			body, _ := readLimitedBody(handshakeResponse.Body)
+			_ = handshakeResponse.Body.Close()
+			helps.AppendAPIWebsocketBody(ctx, h.currentConfig(), body)
+			c.Data(status, handshakeResponse.Header.Get("Content-Type"), body)
+			return
 		}
 		closeHandshakeBody(handshakeResponse, "direct websocket rejected")
 		helpConfig := h.currentConfig()

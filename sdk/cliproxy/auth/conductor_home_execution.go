@@ -266,7 +266,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			durationHomeExec := time.Since(startHomeExec)
 			if countTokens {
 				if _, fingerprint := getEffectiveAuth(); isUnauthorizedError(errExecute) {
-					m.reportHomeUnauthorized(execCtx, preparedAuth, selection.Provider, resultModel, fingerprint)
+					m.reportHomeUnauthorized(execCtx, preparedAuth, selection.Provider, resultModel, fingerprint, "upstream unauthorized")
 				}
 			}
 			if errExecute != nil {
