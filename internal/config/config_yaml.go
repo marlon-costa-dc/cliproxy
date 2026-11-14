@@ -135,7 +135,7 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configFile, data, 0600)
+	return WriteConfigAtomicExact(configFile, data)
 }
 
 // updateNestedScalarYAML returns data with the nested scalar key path like ["a","b"] set to

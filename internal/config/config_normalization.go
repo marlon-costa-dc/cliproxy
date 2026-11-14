@@ -180,11 +180,11 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if strings.EqualFold(name, alias) {
 				continue
 			}
-			aliasKey := strings.ToLower(alias)
-			if _, ok := seenAlias[aliasKey]; ok {
+			pairKey := strings.ToLower(name) + "\x00" + strings.ToLower(alias)
+			if _, ok := seenAlias[pairKey]; ok {
 				continue
 			}
-			seenAlias[aliasKey] = struct{}{}
+			seenAlias[pairKey] = struct{}{}
 			var openAPI *bool
 			if entry.OpenAPI != nil {
 				value := *entry.OpenAPI
@@ -318,6 +318,43 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.RouteChannel = strings.TrimSpace(e.RouteChannel)
+		if e.RouteChannel == "" {
+			e.RouteChannel = canonicalRouteChannel(e.Name)
+		}
+		for keyIndex := range e.APIKeyEntries {
+			if strings.TrimSpace(e.APIKeyEntries[keyIndex].QuotaDomain) == "" {
+				e.APIKeyEntries[keyIndex].QuotaDomain = e.RouteChannel
+			}
+		}
+		if len(e.Models) == 0 {
+			e.Models = []OpenAICompatibilityModel{{
+				Name:                   e.Name,
+				Alias:                  e.Name,
+				CatalogProviderID:      e.RouteChannel,
+				CatalogModelID:         e.Name,
+				CatalogRouteProviderID: e.RouteChannel,
+				CatalogRouteModelID:    e.Name,
+				Protocols:              []string{"openai_chat"},
+			}}
+		}
+		for modelIndex := range e.Models {
+			model := &e.Models[modelIndex]
+			if model.CatalogProviderID == "" {
+				model.CatalogProviderID = e.RouteChannel
+			}
+			if model.CatalogModelID == "" {
+				model.CatalogModelID = model.Name
+			}
+			if model.CatalogRouteProviderID == "" {
+				model.CatalogRouteProviderID = e.RouteChannel
+			}
+			if model.CatalogRouteModelID == "" {
+				model.CatalogRouteModelID = model.Name
+			}
+			if len(model.Protocols) == 0 {
+				model.Protocols = []string{"openai_chat"}
+			}
+		}
 		e.Headers = NormalizeHeaders(e.Headers)
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
@@ -666,4 +703,22 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 		return nil
 	}
 	return out
+}
+
+// canonicalRouteChannel derives the default routing identity from a provider name.
+func canonicalRouteChannel(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range name {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_':
+			builder.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }

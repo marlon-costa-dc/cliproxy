@@ -170,21 +170,13 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
-	if optional && len(bytes.TrimSpace(data)) == 0 {
-		cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
-		cfg.NormalizePluginsConfig()
-		cfg.NormalizeClaudeConfig()
-		return cfg, nil
+	// A file that exists but is empty is a configuration error, never an
+	// implicit standby state: an operator must know the config was not loaded.
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("config file exists but is empty: %s", configFile)
 	}
 
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
-		if optional {
-			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
-			cfgOptional.NormalizePluginsConfig()
-			cfgOptional.NormalizeClaudeConfig()
-			return cfgOptional, nil
-		}
 		return nil, errValidate
 	}
 
@@ -210,13 +202,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
-		if optional {
-			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
-			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
-			cfgOptional.NormalizePluginsConfig()
-			cfgOptional.NormalizeClaudeConfig()
-			return cfgOptional, nil
-		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
@@ -251,7 +236,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
 		// Preserve YAML comments and ordering; update only the nested key.
-		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, managementSecretKeyPath(data), hashed)
+		if errSave := SaveConfigPreserveCommentsUpdateNestedScalar(configFile, managementSecretKeyPath(data), hashed); errSave != nil {
+			return nil, fmt.Errorf("persist hashed remote management key: %w", errSave)
+		}
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)

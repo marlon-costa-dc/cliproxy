@@ -59,19 +59,23 @@ func (cfg *Config) validateOpenAICompatibilityInventoryFacts() error {
 			continue
 		}
 		providerPath := fmt.Sprintf("openai-compatibility[%d]", providerIndex)
+		routeChannel := strings.TrimSpace(provider.RouteChannel)
+		if routeChannel == "" {
+			routeChannel = canonicalRouteChannel(provider.Name)
+		}
 		for _, fact := range []struct {
 			name  string
 			value string
 		}{
 			{name: "name", value: provider.Name},
 			{name: "base-url", value: provider.BaseURL},
-			{name: "route-channel", value: provider.RouteChannel},
+			{name: "route-channel", value: routeChannel},
 		} {
 			if errValidate := validateCanonicalInventoryFact(providerPath+"."+fact.name, fact.value); errValidate != nil {
 				return errValidate
 			}
 		}
-		if provider.RouteChannel != strings.ToLower(provider.RouteChannel) {
+		if routeChannel != strings.ToLower(routeChannel) {
 			return fmt.Errorf("%s.route-channel: must be lower-case", providerPath)
 		}
 		providerName := strings.ToLower(provider.Name)
@@ -83,10 +87,10 @@ func (cfg *Config) validateOpenAICompatibilityInventoryFacts() error {
 		if errURL != nil || baseURL.Host == "" || (baseURL.Scheme != "http" && baseURL.Scheme != "https") {
 			return fmt.Errorf("%s.base-url: must be an absolute HTTP(S) URL", providerPath)
 		}
-		if previousIndex, exists := routeChannels[provider.RouteChannel]; exists {
+		if previousIndex, exists := routeChannels[routeChannel]; exists {
 			return fmt.Errorf("%s.route-channel: duplicates openai-compatibility[%d].route-channel", providerPath, previousIndex)
 		}
-		routeChannels[provider.RouteChannel] = providerIndex
+		routeChannels[routeChannel] = providerIndex
 		if len(provider.Models) == 0 {
 			return fmt.Errorf("%s.models: must contain at least one model", providerPath)
 		}
@@ -103,7 +107,6 @@ func (cfg *Config) validateOpenAICompatibilityInventoryFacts() error {
 				return errValidate
 			}
 		}
-		aliases := make(map[string]int, len(provider.Models))
 		for modelIndex := range provider.Models {
 			model := &provider.Models[modelIndex]
 			path := fmt.Sprintf("openai-compatibility[%d].models[%d]", providerIndex, modelIndex)
@@ -113,10 +116,8 @@ func (cfg *Config) validateOpenAICompatibilityInventoryFacts() error {
 			if errValidate := validateCanonicalInventoryFact(path+".alias", model.Alias); errValidate != nil {
 				return errValidate
 			}
-			if previousIndex, exists := aliases[model.Alias]; exists {
-				return fmt.Errorf("%s.alias: duplicates %s.models[%d].alias", path, providerPath, previousIndex)
-			}
-			aliases[model.Alias] = modelIndex
+			// Duplicate aliases are valid: an ordered pool maps one client alias
+			// to several upstream models for sequential failover.
 			facts := []struct {
 				name  string
 				value string

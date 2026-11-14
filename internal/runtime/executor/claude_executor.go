@@ -529,8 +529,13 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 	apiKey, _ := claudeCreds(auth)
 	useAPIKey := auth != nil && (auth.AuthKind() == cliproxyauth.AuthKindAPIKey || (auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""))
 	isAnthropicBase := isAnthropicUpstreamURL(req.URL)
+	authScheme := ""
+	if auth != nil && auth.Attributes != nil {
+		authScheme = strings.TrimSpace(auth.Attributes["anthropic_auth_scheme"])
+	}
+	useXAPIKey := strings.EqualFold(authScheme, "x-api-key") || (isAnthropicBase && useAPIKey)
 	if strings.TrimSpace(apiKey) != "" {
-		if isAnthropicBase && useAPIKey {
+		if useXAPIKey {
 			req.Header.Del("Authorization")
 			req.Header.Set("x-api-key", apiKey)
 		} else {

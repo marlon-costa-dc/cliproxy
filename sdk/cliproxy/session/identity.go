@@ -344,6 +344,7 @@ func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (clipro
 
 func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 	for _, header := range []string{
+		"X-Opencode-Session",
 		"X-Claude-Code-Session-Id",
 		"X-Claude-Code-Agent-Id",
 		"X-Claude-Code-Parent-Agent-Id",

@@ -52,6 +52,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
+	cfg.SanitizeOpenAICompatibility()
 	if errValidate := cfg.ValidateRuntimeConfig(); errValidate != nil {
 		return nil, errValidate
 	}
