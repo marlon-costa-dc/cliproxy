@@ -1136,6 +1136,7 @@ func sanitizeOpenAIStrictErrorMessage(errMsg *interfaces.ErrorMessage) *interfac
 		safe.Error = &openAIStreamSanitizedError{
 			message:      openAIStreamErrorText(errMsg.Error.Error(), status),
 			safeHeaders:  coreauth.SafeResponseHeaders(errMsg.Error),
+			cause:        errMsg.Error,
 			terminalAuth: coreauth.IsTerminalAuthError(errMsg.Error),
 		}
 	}
@@ -1145,6 +1146,7 @@ func sanitizeOpenAIStrictErrorMessage(errMsg *interfaces.ErrorMessage) *interfac
 type openAIStreamSanitizedError struct {
 	message      string
 	safeHeaders  http.Header
+	cause        error
 	terminalAuth bool
 }
 
@@ -1158,10 +1160,16 @@ func (e *openAIStreamSanitizedError) IsTerminalAuth() bool {
 func (e *openAIStreamSanitizedError) Error() string { return e.message }
 
 func (e *openAIStreamSanitizedError) SafeResponseHeaders() http.Header {
-	if e == nil || e.safeHeaders == nil {
+	if e == nil {
 		return nil
 	}
-	return e.safeHeaders.Clone()
+	if e.safeHeaders != nil {
+		return e.safeHeaders.Clone()
+	}
+	if e.cause != nil {
+		return coreauth.SafeResponseHeaders(e.cause)
+	}
+	return nil
 }
 
 // openAIStreamErrorText produces a client-safe error message. JSON error bodies

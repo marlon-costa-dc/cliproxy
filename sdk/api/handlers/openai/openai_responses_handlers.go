@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"io"
 	"net/http"
 	"regexp"
@@ -1208,6 +1209,13 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			}
 			// Upstream failed before SSE was committed. Return JSON with HTTP status.
 			safeErrMsg := sanitizeResponsesInitialErrorMessage(errMsg)
+			if errMsg != nil && errMsg.Error != nil {
+				for key, values := range coreauth.SafeResponseHeaders(errMsg.Error) {
+					for _, value := range values {
+						c.Writer.Header().Add(key, value)
+					}
+				}
+			}
 			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), safeErrMsg)
 			h.WriteErrorResponse(c, safeErrMsg)
 			if safeErrMsg != nil {
@@ -1574,6 +1582,12 @@ type responsesStreamSanitizedError struct {
 
 func (e *responsesStreamSanitizedError) Error() string { return e.message }
 func (e *responsesStreamSanitizedError) Unwrap() error { return e.cause }
+
+// SafeResponseHeaders forwards the trusted Retry-After through the sanitized
+// stream error so the HTTP response keeps the Home deadline.
+func (e *responsesStreamSanitizedError) SafeResponseHeaders() http.Header {
+	return coreauth.SafeResponseHeaders(e.cause)
+}
 
 func sanitizeResponsesInitialErrorMessage(errMsg *interfaces.ErrorMessage) *interfaces.ErrorMessage {
 	if errMsg != nil && errMsg.DirectResponse {
