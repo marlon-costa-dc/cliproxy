@@ -54,8 +54,11 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 		}
 		wait, shouldRetry := m.shouldRetryAfterErrorWithHomeRetryLimit(ctx, opts, errExecute, attempt, providers, retryModel, maxWait, homeRetryLimit, defaultRequestRetry)
 		if !shouldRetry {
-			if preferredUpstreamErr != nil && isHomeRetryRoundExhausted(errExecute) {
-				errExecute = preferredExecutionAttemptError(errExecute, preferredUpstreamErr)
+			if preferredUpstreamErr != nil {
+				// Keep the current Home retry-round marker (it owns authoritative
+				// timing) while the earlier upstream failure remains the cause.
+				marked := markHomeRetryRoundExhausted(errExecute, &wait, false)
+				errExecute = preferredExecutionAttemptError(marked, preferredUpstreamErr)
 			}
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExecute)
 		}

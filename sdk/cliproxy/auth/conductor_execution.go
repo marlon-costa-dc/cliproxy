@@ -1119,6 +1119,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	var lastErr error
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
+	didRefreshOnUnauthorized := false
 	for {
 		allowSameAuthRetry := homeMode && homeSameAuthRetryPending && lastHomeAuthID != "" && homeSameAuthRetries[lastHomeAuthID] == 0
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !allowSameAuthRetry {
@@ -1371,6 +1372,16 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			pooled = false
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
+		if errStream != nil && homeMode && selection != nil && !didRefreshOnUnauthorized && isUnauthorizedError(errStream) {
+			if refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(execCtx, executor, auth, errStream, false, true); errRefresh == nil && okRefresh {
+				auth = refreshed
+				m.replaceHomeSelectionAuth(selection, auth)
+				publishSelectedAuthMetadata(opts.Metadata, auth)
+				executor = executorForAuth(selection.Executor, auth)
+				didRefreshOnUnauthorized = true
+				streamResult, errStream = m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, true, true)
+			}
+		}
 		if errStream != nil {
 			recordFallbackFailure(ctx, auth, errStream)
 			if hasUpstreamExecutionAttempt(errStream) {
