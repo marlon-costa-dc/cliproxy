@@ -262,7 +262,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			}
 			startHomeExec := time.Now()
 			response, errExecute = execute()
-			errExecute = markUpstreamExecutionAttemptFromContext(execCtx, errExecute)
+			errExecute = markUpstreamExecutionAttempt(errExecute)
 			durationHomeExec := time.Since(startHomeExec)
 			if countTokens {
 				if _, fingerprint := getEffectiveAuth(); isUnauthorizedError(errExecute) {
@@ -288,7 +288,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 					executor = executorForAuth(selection.Executor, preparedAuth)
 					startHomeRetry := time.Now()
 					response, errExecute = execute()
-					errExecute = markUpstreamExecutionAttemptFromContext(execCtx, errExecute)
+					errExecute = markUpstreamExecutionAttempt(errExecute)
 					if errExecute != nil {
 						warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, time.Since(startHomeRetry), errExecute)
 					}

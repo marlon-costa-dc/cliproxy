@@ -3248,9 +3248,7 @@ func TestManager_NoForkAlias_ResetQuota_ErrorPersistCleansCooldownStore(t *testi
 		targetModel = "target-model-err-persist"
 	)
 
-	failingStore := &mockFailingAuthStoreForResetQuota{
-		saveErr: errors.New("simulated disk write failure"),
-	}
+	failingStore := &mockFailingAuthStoreForResetQuota{}
 	cooldownStore := &strictContextCheckingStore{}
 	manager := NewManager(failingStore, nil, nil)
 	manager.SetCooldownStateStore(cooldownStore)
@@ -3284,6 +3282,7 @@ func TestManager_NoForkAlias_ResetQuota_ErrorPersistCleansCooldownStore(t *testi
 		reg.UnregisterClient(auth.ID)
 	})
 	manager.RefreshSchedulerEntry(auth.ID)
+	failingStore.saveErr = errors.New("simulated disk write failure")
 
 	// Trigger cooldown
 	retryAfter := 30 * time.Minute

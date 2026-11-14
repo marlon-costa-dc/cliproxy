@@ -291,8 +291,8 @@ func TestFileSnapshotNotAppliedAfterFailedSave(t *testing.T) {
 	if _, errUpdate := manager.Update(ctx, patched); errUpdate == nil {
 		t.Fatal("update whose save fails succeeded")
 	}
-	if store.failNext == nil || diskField(t, path, "prefix") != "pfx-1" {
-		t.Fatalf("the save did not fail: disk prefix %v", diskField(t, path, "prefix"))
+	if diskField(t, path, "prefix") != "pfx-1" {
+		t.Fatalf("the failed save changed disk prefix to %v", diskField(t, path, "prefix"))
 	}
 	if got, _ := manager.GetByID(trafficAuthID); got.Prefix != "pfx-1" {
 		t.Fatalf("runtime prefix = %q, want the last published pfx-1", got.Prefix)

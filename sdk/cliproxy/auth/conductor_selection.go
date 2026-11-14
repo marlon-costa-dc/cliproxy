@@ -398,21 +398,18 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	// Reconcile must keep the registry aligned with restored/cooling model
 	// states: a credential whose model is cooling (quota or unavailable with a
 	// future retry) is suspended for every registered route of that credential.
-	cooling := false
-	for _, state := range snapshot.ModelStates {
+	for _, sm := range supportedModels {
+		if sm == nil || strings.TrimSpace(sm.ID) == "" {
+			continue
+		}
+		state := existingModelState(snapshot, sm.ID)
+		if state == nil {
+			state = snapshot.ModelStates[sm.ID]
+		}
 		if state == nil {
 			continue
 		}
 		if state.Quota.Exceeded || state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
-			cooling = true
-			break
-		}
-	}
-	if cooling {
-		for _, sm := range supportedModels {
-			if sm == nil || strings.TrimSpace(sm.ID) == "" {
-				continue
-			}
 			globalReg.SuspendClientModel(authID, sm.ID, "quota")
 		}
 	}

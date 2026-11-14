@@ -1479,7 +1479,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 
 	// Apply terminal suspension after projections: a projection only reports
 	// quota/disabled state, so the permanent failure decision is authoritative.
-	if !result.Success && result.Error != nil && persistErr == nil {
+	if !result.Success && result.Error != nil && persistErr == nil && !quotaCooldownDisabledForAuthWithConfig(authSnapshot, m.runtimeConfig.Load()) {
 		reason := terminalSuspensionReason(result.Error)
 		if reason == "" && statusCodeFromResult(result.Error) == http.StatusTooManyRequests && result.RetryAfter != nil {
 			// An explicit upstream Retry-After turns a 429 into a suspended route.
@@ -2812,6 +2812,8 @@ func terminalSuspensionReason(err *Error) string {
 		return "payment_required"
 	case http.StatusNotFound:
 		return "not_found"
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return "upstream_error"
 	}
 	return ""
 }

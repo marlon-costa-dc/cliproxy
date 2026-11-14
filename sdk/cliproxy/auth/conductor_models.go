@@ -240,11 +240,27 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 	isSuspended := auth.Disabled || auth.Status == StatusDisabled
 	isQuotaExceeded := false
 	var suspendReason string
-	if state != nil && state.Quota.Exceeded && state.Quota.Reason != "cloudflare challenge" && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
-		isQuotaExceeded = true
+	if state != nil {
+		if state.Quota.Exceeded && state.Quota.Reason != "cloudflare challenge" && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
+			isQuotaExceeded = true
+		}
+		if state.Status == StatusDisabled {
+			isSuspended = true
+		} else if !state.Quota.Exceeded && (state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now))) {
+			// A non-quota cooldown (auth-level 401/403, terminal route failure)
+			// blocks selection and must be reported as suspended.
+			isSuspended = true
+		}
+	}
+	if !isSuspended && state == nil && auth.Unavailable && auth.NextRetryAfter.After(now) {
+		// A credential-wide cooldown with no per-model state blocks every model.
+		isSuspended = true
 	}
 	if isSuspended {
 		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+		if suspendReason == "" && state != nil {
+			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+		}
 		if suspendReason == "" {
 			suspendReason = "disabled"
 		}
