@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -17,7 +18,7 @@ func (m *Manager) tryRefreshExecutionAuthAfterUnauthorized(ctx context.Context, 
 	if m == nil || executor == nil || auth == nil || alreadyTried || execErr == nil {
 		return auth, false, nil
 	}
-	if !isUnauthorizedError(execErr) {
+	if !isUnauthorizedError(execErr) || (auth.AuthKind() != AuthKindOAuth && strings.TrimSpace(authRefreshToken(auth)) == "") {
 		return auth, false, nil
 	}
 

@@ -291,6 +291,10 @@ func shouldReturnLastErrorOnPickFailure(homeMode bool, lastErr error, errPick er
 	if isHomeRequestRetryExceededError(errPick) {
 		return true
 	}
+	if hasUpstreamExecutionAttempt(lastErr) {
+		// Prefer the earlier upstream failure over a later local retry-round error.
+		return true
+	}
 	var authErr *Error
 	if !errors.As(errPick, &authErr) || authErr == nil {
 		return false
