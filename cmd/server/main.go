@@ -149,6 +149,7 @@ func isOneShotCommandMode(opts commandModeOptions) bool {
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
+	log.SetOutput(os.Stderr)
 	if len(os.Args) > 1 && os.Args[1] == "discover" {
 		discoverFlags := flag.NewFlagSet("discover", flag.ExitOnError)
 		timeoutSec := discoverFlags.Int("timeout", 3, "Discovery timeout in seconds")
@@ -698,7 +699,7 @@ func main() {
 			log.Infof("git-backed config initialized from template: %s", configFilePath)
 		} else if statErr != nil {
 			log.Errorf("failed to inspect git-backed config: %v", statErr)
-			return
+			os.Exit(1)
 		}
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 		if err == nil {
@@ -712,14 +713,14 @@ func main() {
 		wd, err = os.Getwd()
 		if err != nil {
 			log.Errorf("failed to get working directory: %v", err)
-			return
+			os.Exit(1)
 		}
 		configFilePath = filepath.Join(wd, "config.yaml")
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 	}
 	if err != nil {
 		log.Errorf("failed to load config: %v", err)
-		return
+		os.Exit(1)
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
@@ -757,7 +758,7 @@ func main() {
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
 		log.Errorf("failed to configure log output: %v", err)
-		return
+		os.Exit(1)
 	}
 
 	log.Infof("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
@@ -767,7 +768,7 @@ func main() {
 
 	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
 		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)
-		return
+		os.Exit(1)
 	} else {
 		cfg.AuthDir = resolvedAuthDir
 	}
@@ -1040,12 +1041,13 @@ func main() {
 					cancel()
 					<-done
 					fmt.Fprintf(os.Stderr, "TUI error: embedded server is not ready\n")
-					return
+					os.Exit(1)
 				}
 
 				if errRun := tui.Run(cfg.Port, password, hook, origStdout); errRun != nil {
 					restoreIO()
 					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+					os.Exit(1)
 				} else {
 					restoreIO()
 				}
@@ -1058,6 +1060,7 @@ func main() {
 				baseURL := resolveManagementBaseURL(managementBaseURL, cfg)
 				if errRun := tui.RunWithBaseURL(baseURL, password, nil, os.Stdout); errRun != nil {
 					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+					os.Exit(1)
 				}
 			}
 		} else {
@@ -1073,7 +1076,11 @@ func main() {
 				kiro.InitializeAndStart(cfg.AuthDir, cfg)
 				defer kiro.StopGlobalRefreshManager()
 			}
-			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+			if errStart := cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...); errStart != nil {
+				log.Errorf("failed to start server: %v", errStart)
+				fmt.Fprintf(os.Stderr, "failed to start server: %v\n", errStart)
+				os.Exit(1)
+			}
 		}
 	}
 }

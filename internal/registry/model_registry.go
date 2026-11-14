@@ -124,6 +124,8 @@ type ModelInfo struct {
 	Protocols []string `json:"-"`
 	// SupportedEndpoints lists the HTTP routes this model can be served on.
 	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
+	// SupportsFast marks routes that offer a fast/priority inference tier.
+	SupportsFast bool `json:"supports_fast,omitempty"`
 	// Pricing preserves exact catalog decimals for the selected route.
 	Pricing *modelrouting.Pricing `json:"pricing,omitempty"`
 }
