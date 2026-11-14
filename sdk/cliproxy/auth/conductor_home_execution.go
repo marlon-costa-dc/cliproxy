@@ -286,6 +286,11 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			if errExecute != nil {
 				if hasUpstreamExecutionAttempt(errExecute) {
 					upstreamErr = errExecute
+				} else {
+					var statusErr *Error
+					if errors.As(errExecute, &statusErr) && statusErr != nil && statusErr.StatusCode() != 0 {
+						upstreamErr = errExecute
+					}
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
 				if refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(refreshCtx, selection.Executor, preparedAuth, errExecute, didRefreshOnUnauthorized, true); errRefresh != nil {
