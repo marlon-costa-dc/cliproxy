@@ -841,6 +841,12 @@ func (k ClaudeKey) GetProxyURL() string { return k.ProxyURL }
 
 // ClaudeModel describes a mapping between an alias and the actual upstream model name.
 type ClaudeModel struct {
+	CatalogProviderID      string   `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
+	CatalogModelID         string   `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
+	CatalogRouteProviderID string   `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
+	CatalogRouteModelID    string   `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
+	Protocols              []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+
 	// Name is the upstream model identifier used when issuing requests.
 	Name string `yaml:"name" json:"name"`
 
@@ -1161,6 +1167,13 @@ type OpenAICompatibilityAPIKey struct {
 // OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,
 // including the actual model name and its alias for API routing.
 type OpenAICompatibilityModel struct {
+	CatalogProviderID      string   `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
+	CatalogModelID         string   `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
+	CatalogRouteProviderID string   `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
+	CatalogRouteModelID    string   `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
+	Protocols              []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+	VariantID              string   `yaml:"variant-id,omitempty" json:"variant-id,omitempty"`
+
 	// Name is the actual model name used by the external provider.
 	Name string `yaml:"name" json:"name"`
 

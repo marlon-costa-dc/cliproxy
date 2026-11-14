@@ -255,6 +255,8 @@ func ResponseFormatOrSource(opts Options) sdktranslator.Format {
 
 // Response wraps either a full provider response or metadata for streaming flows.
 type Response struct {
+	// DownstreamHeaders holds trusted routing evidence created by the proxy.
+	DownstreamHeaders http.Header
 	// Payload is the provider response in the executor format.
 	Payload []byte
 	// Incomplete reports that the upstream execution terminated in an incomplete state
@@ -280,6 +282,8 @@ type StreamChunk struct {
 // StreamResult wraps the streaming response, providing both the chunk channel
 // and the upstream HTTP response headers captured before streaming begins.
 type StreamResult struct {
+	DownstreamHeaders http.Header
+	Complete          func(error)
 	// Headers carries upstream HTTP response headers from the initial connection.
 	Headers http.Header
 	// Chunks is the channel of streaming payload units.
