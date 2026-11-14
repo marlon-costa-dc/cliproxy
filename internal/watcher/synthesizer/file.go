@@ -78,7 +78,6 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		}
 		out = append(out, auths...)
 	}
-	applyDefaultQuotaDomain(out)
 	return out, nil
 }
 
