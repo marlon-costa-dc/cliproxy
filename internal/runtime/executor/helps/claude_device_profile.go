@@ -314,7 +314,7 @@ func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) Claud
 // and replaces any software tuple that does not exactly match the measured baseline.
 func normalizeClaudeDeviceProfile(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
 	profile = pinClaudeDeviceProfilePlatform(profile, baseline)
-	if !meetsClaudeDeviceProfileBaseline(profile, baseline) {
+	if !claudeDeviceProfileCandidateAcceptable(profile, baseline, nil) {
 		profile.UserAgent = baseline.UserAgent
 		profile.PackageVersion = baseline.PackageVersion
 		profile.RuntimeVersion = baseline.RuntimeVersion
