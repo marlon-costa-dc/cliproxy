@@ -195,6 +195,10 @@ type ModelRegistration struct {
 	Providers map[string]int
 	// SuspendedClients tracks temporarily disabled clients keyed by client ID
 	SuspendedClients map[string]string
+	// CredentialQuotaClients marks clients whose whole credential is in a quota
+	// cooldown. Their models stay listed (clients need a clear quota error)
+	// while selection still enforces the recovery instant.
+	CredentialQuotaClients map[string]bool
 }
 
 // RegisteredRouteSnapshot is an internal management-plane fact. ClientID is
@@ -1131,6 +1135,27 @@ func (r *ModelRegistry) ApplyClientModelProjections(clientID string, epoch uint6
 
 	now := time.Now()
 	changed := false
+	credentialWideQuota := true
+	projectedModels := 0
+	for _, proj := range projections {
+		modelID := strings.TrimSpace(proj.ModelID)
+		if modelID == "" {
+			continue
+		}
+		if _, isOwned := registeredSet[modelID]; !isOwned {
+			continue
+		}
+		projectedModels++
+		if !proj.Suspended && !proj.QuotaExceeded {
+			credentialWideQuota = false
+		}
+		if proj.Suspended && proj.SuspendReason != "quota" && proj.SuspendReason != "credential_quota" {
+			credentialWideQuota = false
+		}
+	}
+	if projectedModels == 0 {
+		credentialWideQuota = false
+	}
 	for _, proj := range projections {
 		modelID := strings.TrimSpace(proj.ModelID)
 		if modelID == "" {
@@ -1181,6 +1206,21 @@ func (r *ModelRegistry) ApplyClientModelProjections(clientID string, epoch uint6
 					registration.LastUpdated = now
 					changed = true
 				}
+			}
+		}
+
+		if credentialWideQuota {
+			if registration.CredentialQuotaClients == nil {
+				registration.CredentialQuotaClients = make(map[string]bool)
+			}
+			if !registration.CredentialQuotaClients[clientID] {
+				registration.CredentialQuotaClients[clientID] = true
+				changed = true
+			}
+		} else if registration.CredentialQuotaClients != nil {
+			if _, ok := registration.CredentialQuotaClients[clientID]; ok {
+				delete(registration.CredentialQuotaClients, clientID)
+				changed = true
 			}
 		}
 	}
@@ -1657,6 +1697,8 @@ func (r *ModelRegistry) selectableModelClientsLocked(modelID, provider string, r
 	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	selectable := 0
+	supporting := 0
+	credentialQuota := 0
 	var recoveryAt time.Time
 	for clientID, modelIDs := range r.clientModels {
 		if provider != "" && strings.ToLower(strings.TrimSpace(r.clientProviders[clientID])) != provider {
@@ -1672,6 +1714,7 @@ func (r *ModelRegistry) selectableModelClientsLocked(modelID, provider string, r
 		if !supportsModel {
 			continue
 		}
+		supporting++
 		blocked := false
 		if quotaTime := registration.QuotaExceededClients[clientID]; quotaTime != nil {
 			clientRecoveryAt := quotaTime.Add(modelQuotaExceededWindow)
@@ -1687,7 +1730,14 @@ func (r *ModelRegistry) selectableModelClientsLocked(modelID, provider string, r
 		}
 		if !blocked {
 			selectable++
+		} else if registration.CredentialQuotaClients[clientID] {
+			credentialQuota++
 		}
+	}
+	if selectable == 0 && supporting == 1 && credentialQuota == 1 {
+		// The sole credential is in a credential-wide quota cooldown. Keep the
+		// model listed so clients receive the quota error instead of a 404.
+		return 1, recoveryAt
 	}
 	return selectable, recoveryAt
 }
