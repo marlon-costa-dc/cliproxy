@@ -77,30 +77,36 @@ jobs:
             exit 1
           fi
 
-          # Dispatch returns before a workflow starts, so ignore all prior runs
-          # with the same tag/SHA and wait for the new run's conclusion.
+          # Follow the exact run returned by workflow_dispatch. Run lists may
+          # lag behind dispatch and concurrent workflows can share a title.
           dispatch_and_watch() {
             local workflow="$1" title="$2" tag="$3" commit="$4"
-            local before run_id=""
-            before="$(gh run list --workflow "$workflow" --event workflow_dispatch \
-              --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
-            before="${before:-0}"
-            gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_REF" \
-              -f tag="$tag" -f commit="$commit"
+            local dispatch_url run_id prefix metadata
+            prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
+            dispatch_url="$(gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_REF" \
+              -f tag="$tag" -f commit="$commit")"
+            run_id="${dispatch_url#"$prefix"}"
+            if [[ "$dispatch_url" != "$prefix"* || ! "$run_id" =~ ^[0-9]+$ ]]; then
+              echo "Dispatch did not return an exact GitHub Actions run URL for $title." >&2
+              return 1
+            fi
 
             for _ in $(seq 1 20); do
-              run_id="$(gh run list --workflow "$workflow" --event workflow_dispatch \
-                --limit 20 --json databaseId,displayTitle \
-                | jq -r --arg title "$title" --argjson before "$before" \
-                  'first(.[] | select(.displayTitle == $title and .databaseId > $before) | .databaseId) // empty')"
-              if [ -n "$run_id" ]; then
-                printf -- '- %s: %s\n' "$workflow" "$run_id" >> "$GITHUB_STEP_SUMMARY"
+              if metadata="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" \
+                --json displayTitle,event,headSha 2>/dev/null)"; then
+                if ! jq -e --arg title "$title" --arg commit "$commit" \
+                  '.displayTitle == $title and .event == "workflow_dispatch" and .headSha == $commit' \
+                  <<<"$metadata" >/dev/null; then
+                  echo "Unexpected run identity at $dispatch_url; expected $title." >&2
+                  return 1
+                fi
+                printf -- '- %s: %s\n' "$workflow" "$dispatch_url" >> "$GITHUB_STEP_SUMMARY"
                 gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
                 return
               fi
               sleep 5
             done
-            echo "Unable to identify the new run for $title" >&2
+            echo "Unable to read dispatched run $dispatch_url for $title." >&2
             return 1
           }
 
