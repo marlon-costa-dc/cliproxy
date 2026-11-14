@@ -732,6 +732,22 @@ func (m *Manager) invalidateSessionAffinity(authID string) {
 	}
 }
 
+func (m *Manager) forgetWeightedAuthUpTo(authID string, maxEpoch, maxGen uint64) {
+	if m == nil || authID == "" {
+		return
+	}
+	sel := m.Selector()
+	if epochForgetter, ok := sel.(interface {
+		ForgetAuthUpTo(string, uint64, uint64)
+	}); ok && epochForgetter != nil {
+		epochForgetter.ForgetAuthUpTo(authID, maxEpoch, maxGen)
+		return
+	}
+	if forgetter, ok := sel.(interface{ ForgetAuth(string) }); ok && forgetter != nil {
+		forgetter.ForgetAuth(authID)
+	}
+}
+
 // Load resets manager state from the backing store.
 func (m *Manager) Load(ctx context.Context) error {
 	// Exclude complete Save/publication transactions, including new registrations

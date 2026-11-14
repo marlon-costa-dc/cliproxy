@@ -1827,6 +1827,21 @@ func (r *ModelRegistry) selectableModelClientsLocked(modelID, provider string, r
 	return selectable, recoveryAt
 }
 
+// GetClientModelSuspensionReason returns the suspension reason for a client/model.
+func (r *ModelRegistry) GetClientModelSuspensionReason(clientID, modelID string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	registration := r.models[strings.TrimSpace(modelID)]
+	if registration == nil {
+		return "", false
+	}
+	reason, ok := registration.SuspendedClients[strings.TrimSpace(clientID)]
+	return reason, ok
+}
+
 func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 	now := r.now()
 	r.mutex.RLock()
