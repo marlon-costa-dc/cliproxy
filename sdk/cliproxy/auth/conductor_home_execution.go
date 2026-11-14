@@ -33,12 +33,21 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 		if errExecute == nil {
 			return response, nil
 		}
+		if preferredUpstreamErr == nil {
+			var statusErr *Error
+			if errors.As(errExecute, &statusErr) && statusErr != nil && statusErr.StatusCode() != 0 {
+				preferredUpstreamErr = errExecute
+			}
+		}
 		if hasUpstreamExecutionAttempt(errExecute) {
 			preferredUpstreamErr = errExecute
 		}
 		if retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errExecute, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
 				if retryRoundWaited {
+					if preferredUpstreamErr != nil {
+						errExecute = preferredExecutionAttemptError(markHomeRetryRoundExhausted(errExecute, nil, false), preferredUpstreamErr)
+					}
 					return cliproxyexecutor.Response{}, errExecute
 				}
 				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
@@ -59,7 +68,7 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 				// Keep the current Home retry-round marker (it owns authoritative
 				// timing) while the earlier upstream failure remains the cause.
 				marked := markHomeRetryRoundExhausted(errExecute, &wait, false)
-				errExecute = preferredExecutionAttemptError(marked, preferredUpstreamErr)
+				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(marked, preferredUpstreamErr)
 			}
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExecute)
 		}

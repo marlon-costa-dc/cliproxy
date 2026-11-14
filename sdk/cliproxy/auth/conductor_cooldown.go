@@ -566,7 +566,6 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	var snapshot *Auth
 	models := make([]string, 0)
 	registeredModels := modelsForRegisteredAuth(authID)
-	cooldownStateChanged := false
 
 	releaseMutation := m.lockAuthMutation(authID)
 	defer releaseMutation()
@@ -577,11 +576,7 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		return nil, nil, nil
 	}
 
-	var cooldownRecordsBefore []CooldownStateRecord
 	trackCooldownState := m.cooldownStore != nil
-	if trackCooldownState {
-		cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
-	}
 
 	for modelKey, state := range auth.ModelStates {
 		if strings.TrimSpace(modelKey) == "" {
@@ -615,16 +610,15 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	auth.Generation++
 	auth.UpdatedAt = now
 	snapshot = auth.Clone()
-	if trackCooldownState {
-		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
-		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
-	}
 	errPersist := m.persistLocked(ctx, auth)
 	m.mu.Unlock()
 	releaseMutation()
 
 	defer func() {
-		if cooldownStateChanged {
+		// ResetQuota always republishes the snapshot: the auth-store save may
+		// fail (or the restored auth may be empty), but the cooldown owner must
+		// not keep a stale record for this credential.
+		if trackCooldownState {
 			m.persistCooldownStates(context.Background())
 		}
 	}()
@@ -921,6 +915,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 
 	var persistErr error
 	var authSnapshot *Auth
+	var pendingCooldownRecords []CooldownStateRecord
 	cooldownStateChanged := false
 	scheduleUnauthorizedRefresh := false
 	now := time.Now()
@@ -1429,7 +1424,25 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 			// cooldown store is a separate owner and ResetQuota must see it.
 			if trackCooldownState {
 				cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
-				cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+				if !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter) {
+					pendingCooldownRecords = make([]CooldownStateRecord, 0, len(cooldownRecordsAfter))
+					for _, other := range m.auths {
+						if other == auth {
+							pendingCooldownRecords = append(pendingCooldownRecords, cooldownRecordsAfter...)
+							continue
+						}
+						pendingCooldownRecords = append(pendingCooldownRecords, m.cooldownStateRecordsForAuthLocked(other, now)...)
+					}
+					sort.Slice(pendingCooldownRecords, func(i, j int) bool {
+						if pendingCooldownRecords[i].Provider != pendingCooldownRecords[j].Provider {
+							return pendingCooldownRecords[i].Provider < pendingCooldownRecords[j].Provider
+						}
+						if pendingCooldownRecords[i].AuthID != pendingCooldownRecords[j].AuthID {
+							return pendingCooldownRecords[i].AuthID < pendingCooldownRecords[j].AuthID
+						}
+						return pendingCooldownRecords[i].Model < pendingCooldownRecords[j].Model
+					})
+				}
 			}
 			*auth = *authBefore
 			authSnapshot = authBefore.Clone()
@@ -1444,6 +1457,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 	}
 	m.mu.Unlock()
 	releaseMutation()
+	if len(pendingCooldownRecords) > 0 && m.cooldownStore != nil {
+		_ = m.cooldownStore.Save(context.Background(), pendingCooldownRecords)
+	}
 	if m.scheduler != nil && authSnapshot != nil {
 		credentialScopedResult := result.CredentialScope || scheduleUnauthorizedRefresh
 		var targetModels []string
