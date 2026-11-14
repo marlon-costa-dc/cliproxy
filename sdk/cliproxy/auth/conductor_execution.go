@@ -220,6 +220,15 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
+	if !m.HomeEnabled() {
+		if _, routed, routeErr := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts); routeErr != nil {
+			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(routeErr)
+		} else if routed {
+			response, err := m.executeWithModelRouting(ctx, normalized, req, opts)
+			return response, unwrapExecutionBoundaryError(err)
+		}
+	}
+
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -296,6 +305,15 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, true)
 		return resp, unwrapExecutionBoundaryError(errHome)
+	}
+
+	if !m.HomeEnabled() {
+		if _, routed, routeErr := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts); routeErr != nil {
+			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(routeErr)
+		} else if routed {
+			response, err := m.executeCountWithModelRouting(ctx, normalized, req, opts)
+			return response, unwrapExecutionBoundaryError(err)
+		}
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
@@ -375,6 +393,14 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	opts, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
 	if errThread != nil {
 		return nil, errThread
+	}
+
+	if !m.HomeEnabled() {
+		if _, routed, routeErr := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts); routeErr != nil {
+			return nil, unwrapExecutionBoundaryError(routeErr)
+		} else if routed {
+			return m.executeStreamWithModelRouting(ctx, normalized, req, opts)
+		}
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()

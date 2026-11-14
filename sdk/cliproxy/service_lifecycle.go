@@ -136,6 +136,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
+	if !homeEnabled {
+		s.serverOptions = append(s.serverOptions, api.WithRoutingPublisher(s))
+	}
 	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
@@ -172,6 +175,12 @@ func (s *Service) Run(ctx context.Context) error {
 		})
 	}
 
+	if !homeEnabled && cfg.ModelRouting != nil {
+		s.registerModelsForAuthBatch(ctx, s.coreManager.List())
+		if err := s.initializeRoutingPublication(cfg.ModelRouting); err != nil {
+			return err
+		}
+	}
 	if s.hooks.OnBeforeStart != nil {
 		s.hooks.OnBeforeStart(s.currentConfig())
 	}

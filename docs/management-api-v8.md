@@ -308,3 +308,22 @@ accepts legacy, new, or mixed layouts, normalizing v8 documents on save.
 
 Plugin OAuth uses the shared v8 login endpoint. Other plugin-defined HTTP
 extensions retain their declared `/v0/management` routes.
+
+## DataCosmos routing publication
+
+The standard management API remains under `/v8/management`. A standalone
+CLIProxy with the routing publisher adds only the following authenticated
+operations under `/v8dc/management/routing`:
+
+| Method | Resource | Result |
+| --- | --- | --- |
+| GET | `model-inventory` | Registered runtime routes, credential eligibility without secret values, and the adopted generation. |
+| GET | `config.yaml` | Adopted `model-routing` YAML and its generation ETag; an empty runtime returns `model-routing: null`. |
+| PUT | `config.yaml` | Activate a YAML document containing only `model-routing` and return the adopted-generation receipt and ETag. |
+
+Bootstrap uses `If-None-Match: *`. Subsequent publications use the full ETag
+received from the routing resource as `If-Match`. A stale identity returns
+`412`; a missing or ambiguous precondition returns `428`. The ordinary v8
+configuration ETag identifies file bytes and cannot authorize a routing update.
+The ordinary v8 configuration API retains the published routing block but
+rejects attempts to modify or remove it.

@@ -198,6 +198,16 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 		return []string{"home"}, resolvedModelName, nil
 	}
 
+	if h != nil && h.AuthManager != nil {
+		channels, matched, routeErr := h.AuthManager.ModelRoutingProviders(baseModel)
+		if routeErr != nil {
+			return nil, "", executionErrorMessage(routeErr)
+		}
+		if matched {
+			return channels, resolvedModelName, nil
+		}
+	}
+
 	providers = util.GetProviderName(baseModel)
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models

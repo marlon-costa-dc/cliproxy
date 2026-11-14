@@ -1073,3 +1073,29 @@ func TestConfigV8_SensitivePatternsReplace(t *testing.T) {
 		t.Fatalf("PUT api-keys/claude: status=%d body=%s", claudePut.Code, claudePut.Body.String())
 	}
 }
+
+func TestConfigV8PreservesRoutingPublication(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "server: {port: 8317}\nmodel-routing: {generation: 1}\n"
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: &config.Config{}, configFilePath: path}
+	router := gin.New()
+	router.PATCH("/v8/management/config", h.ConfigV8)
+	router.DELETE("/v8/management/config/*path", h.ConfigV8)
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPatch, "/v8/management/config", `{"model-routing":{"generation":2}}`},
+		{http.MethodDelete, "/v8/management/config/model-routing", ""},
+	} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "read_only_field") {
+			t.Fatalf("%s %s: %d %s", tc.method, tc.path, rec.Code, rec.Body.String())
+		}
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil || string(saved) != raw {
+		t.Fatalf("generic management requests changed the published config: %v", err)
+	}
+}

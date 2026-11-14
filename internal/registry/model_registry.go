@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
 	"sort"
 	"strings"
 	"sync"
@@ -38,6 +39,15 @@ type NativeCapabilities struct {
 
 // ModelInfo represents information about an available model
 type ModelInfo struct {
+	Pricing *modelrouting.Pricing `json:"pricing,omitempty"`
+	// Routing facts are internal and declared by the model registration owner.
+	CatalogProviderID      string   `json:"-"`
+	CatalogModelID         string   `json:"-"`
+	CatalogRouteProviderID string   `json:"-"`
+	CatalogRouteModelID    string   `json:"-"`
+	Protocols              []string `json:"-"`
+	VariantID              string   `json:"-"`
+
 	// ID is the unique identifier for the model
 	ID string `json:"id"`
 	// MetadataModelID identifies the canonical model used to resolve client metadata.
@@ -857,6 +867,8 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		return nil
 	}
 	copyModel := *model
+	copyModel.Pricing = modelrouting.ClonePricing(model.Pricing)
+	copyModel.Protocols = append([]string(nil), model.Protocols...)
 	if model.NativeCapabilities != nil {
 		copyCapabilities := *model.NativeCapabilities
 		if model.NativeCapabilities.WebSearch != nil {

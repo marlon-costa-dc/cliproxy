@@ -155,7 +155,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		preserveV8TURNSecrets(root, before)
 	}
 	// Revisions are owned by Home and must not become ordinary editable settings.
-	for _, field := range []string{"credentials/concurrency/lifecycle-config-revision", "credentials/concurrency/observation-barrier-revision", "plugins/auth-revision"} {
+	for _, field := range []string{"credentials/concurrency/lifecycle-config-revision", "credentials/concurrency/observation-barrier-revision", "plugins/auth-revision", "model-routing"} {
 		old := configV8Node(before, strings.Split(field, "/"))
 		next := configV8Node(root, strings.Split(field, "/"))
 		var a, b any

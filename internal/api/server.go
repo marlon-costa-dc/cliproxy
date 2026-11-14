@@ -272,6 +272,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Setup routes
 	s.setupRoutes()
+	if optionState.routingPublisher != nil {
+		s.registerRoutingManagement(optionState.routingPublisher)
+	}
 
 	// Apply additional router configurators from options
 	if optionState.routerConfigurator != nil {

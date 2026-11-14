@@ -132,9 +132,29 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
 		return
 	}
-	var cfg config.Config
+	var cfg struct {
+		ModelRouting *yaml.Node `yaml:"model-routing"`
+	}
 	if err = yaml.Unmarshal(body, &cfg); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": err.Error()})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Whole-file v0 replacement cannot own the routing generation.
+	current, err := os.ReadFile(h.configFilePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed"})
+		return
+	}
+	var previous = cfg
+	previous.ModelRouting = nil
+	if err := yaml.Unmarshal(current, &previous); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
+		return
+	}
+	if previous.ModelRouting != nil || cfg.ModelRouting != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "active_model_routing", "message": "use v8 configuration to preserve the routing generation"})
 		return
 	}
 	// Validate config using LoadConfigOptional with optional=false to enforce parsing
@@ -164,8 +184,6 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	if WriteConfig(h.configFilePath, body) != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
 		return

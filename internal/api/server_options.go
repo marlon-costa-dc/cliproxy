@@ -14,6 +14,7 @@ import (
 )
 
 type serverOptionConfig struct {
+	routingPublisher      RoutingPublisher
 	pluginInterceptorHost handlers.PluginInterceptorHost
 	extraMiddleware       []gin.HandlerFunc
 	engineConfigurator    func(*gin.Engine)
