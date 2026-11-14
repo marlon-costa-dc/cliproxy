@@ -1424,11 +1424,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 
 		persistErr = m.persistLocked(ctx, auth)
 		if persistErr != nil {
-			// The store rejected the result state. Restore the last published
-			// credential so a failed commit is never observable in memory.
+			// The auth store rejected the result state. Restore the last published
+			// credential, but still remember the cooldown observation: the
+			// cooldown store is a separate owner and ResetQuota must see it.
+			if trackCooldownState {
+				cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
+				cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+			}
 			*auth = *authBefore
 			authSnapshot = authBefore.Clone()
-			trackCooldownState = false
 			scheduleUnauthorizedRefresh = false
 		} else {
 			authSnapshot = auth.Clone()
@@ -2140,6 +2144,9 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 		return true
 	}
 	if err != nil && err.Code == ErrorCodeForceCooldown {
+		return false
+	}
+	if statusCodeFromResult(err) == http.StatusTooManyRequests && !err.IsRequestScoped() {
 		return false
 	}
 	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err)

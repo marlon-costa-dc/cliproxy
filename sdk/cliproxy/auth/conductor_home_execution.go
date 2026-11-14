@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -281,7 +282,9 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				if refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(refreshCtx, selection.Executor, preparedAuth, errExecute, didRefreshOnUnauthorized, true); errRefresh != nil {
 					errExecute = errRefresh
 					warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
-					return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExecute)
+					if statusCodeFromError(errRefresh) == http.StatusServiceUnavailable {
+						return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExecute)
+					}
 				} else if okRefresh {
 					preparedAuth = refreshed
 					m.replaceHomeSelectionAuth(selection, preparedAuth)
