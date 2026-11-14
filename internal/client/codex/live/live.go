@@ -352,18 +352,43 @@ func (h *Handler) Handle(c *gin.Context) {
 	if selection != nil {
 		if errBind := selection.Bind(closeResponseBody); errBind != nil {
 			selection.End("response_bind_failed")
+			if resp.StatusCode == http.StatusUnauthorized {
+				h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", model)
+			}
 			writeLiveError(c, http.StatusServiceUnavailable, errBind.Error())
 			return
 		}
+	}
+	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
+		responseHeaders := callResponseHeaders(resp.Header)
+		helps.RecordAPIResponseMetadata(ctx, runtimeConfig, resp.StatusCode, responseHeaders)
+		body, errRead := readLimitedBody(resp.Body)
+		helps.AppendAPIResponseChunk(ctx, runtimeConfig, body)
+		h.authManager.ReportHomeUnauthorizedBody(ctx, selected, "codex", model, string(body))
+		selection.End("unauthorized")
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("codex live: close unauthorized response body error: %v", errClose)
+		}
+		if errRead != nil {
+			helps.RecordAPIResponseError(ctx, runtimeConfig, errRead)
+			writeLiveError(c, clienterror.HTTPStatusFromErrorOr(errRead, http.StatusBadGateway), "Failed to read Codex live response")
+			return
+		}
+		copyRealtimeHandshakeHeaders(c.Writer.Header(), resp.Header)
+		if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+			c.Header("Content-Type", contentType)
+		}
+		c.Status(resp.StatusCode)
+		if _, errWrite := c.Writer.Write(body); errWrite != nil {
+			log.Warnf("codex live: write unauthorized response body: %v", errWrite)
+		}
+		return
 	}
 
 	responseHeaders := callResponseHeaders(resp.Header)
 	helps.RecordAPIResponseMetadata(ctx, runtimeConfig, resp.StatusCode, responseHeaders)
 	responseBody, errResponse := readLimitedBody(resp.Body)
 	helps.AppendAPIResponseChunk(ctx, runtimeConfig, responseBody)
-	if resp.StatusCode == http.StatusUnauthorized {
-		h.authManager.ReportHomeUnauthorizedBody(ctx, selected, "codex", model, string(responseBody))
-	}
 	if errResponse != nil {
 		helps.RecordAPIResponseError(ctx, runtimeConfig, errResponse)
 		message := "Failed to read Codex live response"
