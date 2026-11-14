@@ -544,7 +544,9 @@ func readLimitedBody(body io.Reader) ([]byte, error) {
 	}
 	payload, errRead := io.ReadAll(io.LimitReader(body, maxBodySize+1))
 	if errRead != nil {
-		return nil, errRead
+		// Keep the bytes already received so callers can forward the upstream
+		// error body instead of replacing it with a generic message.
+		return payload, errRead
 	}
 	if len(payload) > maxBodySize {
 		return nil, errBodyTooLarge
