@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"

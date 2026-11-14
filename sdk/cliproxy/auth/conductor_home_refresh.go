@@ -17,7 +17,7 @@ func (m *Manager) tryRefreshExecutionAuthAfterUnauthorized(ctx context.Context, 
 	if m == nil || executor == nil || auth == nil || alreadyTried || execErr == nil {
 		return auth, false, nil
 	}
-	if !isUnauthorizedError(execErr) || auth.AuthKind() != AuthKindOAuth {
+	if !isUnauthorizedError(execErr) {
 		return auth, false, nil
 	}
 

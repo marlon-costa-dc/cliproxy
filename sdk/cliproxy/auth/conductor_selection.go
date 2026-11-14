@@ -396,21 +396,15 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	globalReg.ApplyClientModelProjections(authID, regEpoch, snapshot.Generation, projections)
 
 	// Reconcile must keep the registry aligned with restored/cooling model
-	// states: a credential whose model is cooling (quota or unavailable with a
-	// future retry) is suspended for every registered route of that credential.
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
+	// states. Use the alias-resolved projections so each route model is matched
+	// to its own state; quota cooldowns are suspended even though the projection
+	// reports them separately from a terminal suspension.
+	for _, projection := range projections {
+		if strings.TrimSpace(projection.ModelID) == "" {
 			continue
 		}
-		state := existingModelState(snapshot, sm.ID)
-		if state == nil {
-			state = snapshot.ModelStates[sm.ID]
-		}
-		if state == nil {
-			continue
-		}
-		if state.Quota.Exceeded || state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
-			globalReg.SuspendClientModel(authID, sm.ID, "quota")
+		if projection.Suspended || projection.QuotaExceeded {
+			globalReg.SuspendClientModel(authID, projection.ModelID, "quota")
 		}
 	}
 
