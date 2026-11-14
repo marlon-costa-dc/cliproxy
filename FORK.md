@@ -24,7 +24,8 @@ commit in `.fork-upstream.env`. Dispatch from the qualified `dc-use` tip;
 the archive matrix and the fork GHCR image use the verified tagged commit.
 The Linux GLIBC archives enable native plugins; the portable archives have a
 `_no-plugin` suffix. The release dispatcher waits for the exact-tag GHCR image before starting
-the archive workflow. Publish the archive set and its checksums from a draft
+the archive workflow, following each run ID returned by GitHub and verifying
+its tag and commit before waiting. Publish the archive set and its checksums from a draft
 after the matrix passes. Set `CLI_PROXY_IMAGE` to the qualified tag or digest
 when running Compose. Preserve
 historical tags and divergent refs. Only adopt a new artifact after verifying
