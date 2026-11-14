@@ -61,10 +61,7 @@ func TestResolveCooldownStateStoreUsesCapturedBackendProvider(t *testing.T) {
 	}
 
 	sdkAuth.RegisterTokenStore(&cooldownProviderTokenStore{cooldownStore: &serviceCooldownStateStore{}})
-	got, errResolve := service.resolveCooldownStateStore(cfg)
-	if errResolve != nil {
-		t.Fatalf("resolveCooldownStateStore() error = %v", errResolve)
-	}
+	got := service.resolveCooldownStateStore(cfg)
 	if got != providedStore {
 		t.Fatalf("resolveCooldownStateStore() = %T, want captured backend-provided store", got)
 	}

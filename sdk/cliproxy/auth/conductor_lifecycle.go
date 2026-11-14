@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	log "github.com/sirupsen/logrus"
 )
 
 // SetRetryConfig updates additional credential retry rounds, the per-round credential limit, and the cooldown wait interval.
@@ -135,11 +134,11 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.CredentialVersion = 1
 	}
 	auth.Generation = 1
-	// Serialize this credential, but release the manager lock during store I/O.
-	// Persist failures stay non-fatal, but must not be silent: a restart would
-	// lose the credential that only exists in memory.
+	// Save before publication. A failed store commit must never publish an
+	// in-memory credential that a restart would lose.
 	if errPersist := m.persistLocked(ctx, auth); errPersist != nil {
-		log.WithFields(log.Fields{"auth_id": auth.ID, "credential": auth.ID, "provider": auth.Provider}).Warnf("failed to persist registered auth %s (%s): %v", auth.Provider, auth.ID, errPersist)
+		m.mu.Unlock()
+		return nil, errPersist
 	}
 	if m.authEpochs[auth.ID] != auth.RegistrationEpoch {
 		m.mu.Unlock()
@@ -193,7 +192,18 @@ func (m *Manager) UpdateRefreshedAuth(ctx context.Context, base, updated *Auth) 
 
 // Update replaces an existing auth entry and notifies hooks.
 func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
-	return m.updateInternal(ctx, nil, auth, updateModeReplace)
+	updated, errUpdate := m.updateInternal(ctx, nil, auth, updateModeReplace)
+	if errUpdate != nil {
+		return nil, errUpdate
+	}
+	if updated == nil {
+		id := ""
+		if auth != nil {
+			id = auth.ID
+		}
+		return nil, fmt.Errorf("update auth %s: auth not found", id)
+	}
+	return updated, nil
 }
 
 // Modify loads the latest auth for id while holding the per-auth mutation gate,
@@ -542,15 +552,9 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	// Runtime-only changes made during I/O are merged below, never overwritten.
 	existingBeforeSave := existing.Clone()
 	refreshPatchBeforeSave := auth.CodexRefreshPatch
-	persistMetaMint := (mode == updateModePrepare || mode == updateModeRefresh) && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta")
 	if errPersist := m.persistLocked(ctx, auth); errPersist != nil {
-		// A minted Meta key must reach the store before requests can use it.
-		if persistMetaMint {
-			m.mu.Unlock()
-			return nil, false, false, fmt.Errorf("persist meta auth: %w", errPersist)
-		}
-		// Ordinary persistence failures remain non-fatal, but never silent.
-		log.WithFields(log.Fields{"auth_id": auth.ID, "credential": auth.ID, "provider": auth.Provider}).Warnf("failed to persist updated auth %s (%s): %v", auth.Provider, auth.ID, errPersist)
+		m.mu.Unlock()
+		return nil, false, false, fmt.Errorf("persist updated auth: %w", errPersist)
 	}
 	if m.authEpochs[auth.ID] != auth.RegistrationEpoch {
 		m.mu.Unlock()
@@ -626,8 +630,16 @@ func equalErrorPtr(a, b *Error) bool {
 
 // Remove deletes an auth from runtime state without persisting.
 // Disk and token-store deletion must be handled by the caller.
-func (m *Manager) Remove(ctx context.Context, id string) {
+func (m *Manager) Remove(ctx context.Context, id string) error {
+	if m == nil {
+		return fmt.Errorf("remove auth: manager is nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("remove auth: ID is empty")
+	}
 	m.RemoveIf(ctx, id, nil)
+	return nil
 }
 
 // RemoveIf deletes an auth from runtime state while holding the per-auth

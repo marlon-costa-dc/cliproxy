@@ -26,8 +26,12 @@ import (
 )
 
 func newUpstreamAttemptContext(ctx context.Context) context.Context {
-	ctx = logging.WithFreshResponseHeadersHolder(ctx)
-	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
+	if base := modelRoutingBaseContextFromContext(ctx); base != nil {
+		// Credential acquisition deadlines bound selection and preparation only.
+		// The connected upstream attempt must inherit the caller context.
+		ctx = base
+	}
+	return logging.WithFreshResponseHeadersHolder(ctx)
 }
 
 func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) error {
@@ -137,6 +141,15 @@ func (m *Manager) executeWithoutFallbackChain(ctx context.Context, providers []s
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	if _, routed, errRouting := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts); errRouting != nil {
+		return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errRouting)
+	} else if routed {
+		resp, errModelRouting := m.executeWithModelRouting(ctx, normalized, req, opts)
+		return resp, unwrapExecutionBoundaryError(errModelRouting)
+	}
+	if len(m.orderedCandidateChainForRequest(normalized, req, opts)) > 1 {
+		return m.executeWithOrderedFailover(ctx, normalized, req, opts)
+	}
 	tracker := newRouteAttemptTracker()
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, false, tracker)
@@ -225,6 +238,12 @@ func (m *Manager) executeCountWithoutFallbackChain(ctx context.Context, provider
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	if _, routed, errRouting := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts); errRouting != nil {
+		return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errRouting)
+	} else if routed {
+		resp, errModelRouting := m.executeCountWithModelRouting(ctx, normalized, req, opts)
+		return resp, unwrapExecutionBoundaryError(errModelRouting)
+	}
 	tracker := newRouteAttemptTracker()
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, true, tracker)
@@ -310,6 +329,11 @@ func (m *Manager) executeStreamWithoutFallbackChain(ctx context.Context, provide
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+	}
+	if _, routed, errRouting := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts); errRouting != nil {
+		return nil, unwrapExecutionBoundaryError(errRouting)
+	} else if routed {
+		return m.executeStreamWithModelRouting(ctx, normalized, req, opts)
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
@@ -636,7 +660,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixed(modelRoutingSelectionContext(ctx), providers, routeModel, pickOpts, tried)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -665,7 +689,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
-		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+		auth, errPrepare = m.prepareRequestAuth(modelRoutingSelectionContext(ctx), executor, auth)
 		if errPrepare != nil {
 			recordFallbackFailure(ctx, auth, errPrepare)
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
@@ -676,7 +700,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, AccessToken: authAccessTokenForRequest(execCtx, auth, pickOpts.Headers), CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch}
-			m.MarkResult(execCtx, result)
+			if errMark := m.MarkResult(execCtx, result); errMark != nil {
+				return cliproxyexecutor.Response{}, joinExecutionResultError(errPrepare, errMark)
+			}
 			lastErr = errPrepare
 			continue
 		}
@@ -774,7 +800,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
-					m.MarkResult(execCtx, result)
+					if errMark := m.MarkResult(execCtx, result); errMark != nil {
+						errExec = joinExecutionResultError(errExec, errMark)
+					}
 					errExec = annotateTrustedRetryAfterByHint(errExec)
 					syncPreferredUpstreamError(&upstreamErr, errExec)
 				}
@@ -802,7 +830,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				tracker.Record(auth, authErr)
 				continue
 			}
-			m.MarkResult(execCtx, result)
+			if errMark := m.MarkResult(execCtx, result); errMark != nil {
+				return cliproxyexecutor.Response{}, errMark
+			}
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, nil
@@ -867,7 +897,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixed(modelRoutingSelectionContext(ctx), providers, routeModel, pickOpts, tried)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -896,7 +926,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
-		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+		auth, errPrepare = m.prepareRequestAuth(modelRoutingSelectionContext(ctx), executor, auth)
 		if errPrepare != nil {
 			recordFallbackFailure(ctx, auth, errPrepare)
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
@@ -1122,7 +1152,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				provider = selection.Provider
 			}
 		} else {
-			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+			auth, executor, provider, errPick = m.pickNextMixed(modelRoutingSelectionContext(ctx), providers, routeModel, pickOpts, tried)
 		}
 		if errPick != nil {
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -1249,7 +1279,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		if selection != nil {
 			auth, errPrepare = m.prepareHomeRequestAuth(execCtx, executor, selection)
 		} else {
-			auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+			auth, errPrepare = m.prepareRequestAuth(modelRoutingSelectionContext(ctx), executor, auth)
 		}
 		if errPrepare != nil {
 			recordFallbackFailure(ctx, auth, errPrepare)
@@ -1752,7 +1782,7 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 
 	saved, errUpdate := m.UpdatePreparedAuth(ctx, base, updated)
 	if errUpdate != nil {
-		return nil, errUpdate
+		return target, errUpdate
 	}
 	if saved != nil {
 		return saved, nil

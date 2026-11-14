@@ -105,6 +105,10 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeClaudeKeys(ctx)...)
 	// Codex API Keys
 	out = append(out, s.synthesizeCodexKeys(ctx)...)
+	// OpenCode API Keys
+	out = append(out, s.synthesizeOpenCodeKeys(ctx)...)
+	// OpenCode Go API Keys
+	out = append(out, s.synthesizeOpenCodeGoKeys(ctx)...)
 	// Kiro (AWS CodeWhisperer)
 	out = append(out, s.synthesizeKiroKeys(ctx)...)
 	// xAI API Keys
@@ -275,6 +279,16 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 // synthesizeCodexKeys creates Auth entries for Codex API keys.
 func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreauth.Auth {
 	return s.synthesizeCodexStyleKeys(ctx, ctx.Config.CodexKey, "codex")
+}
+
+// synthesizeOpenCodeKeys creates Auth entries for OpenCode API keys.
+func (s *ConfigSynthesizer) synthesizeOpenCodeKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	return s.synthesizeCodexStyleKeys(ctx, ctx.Config.OpenCodeKey, "opencode")
+}
+
+// synthesizeOpenCodeGoKeys creates Auth entries for OpenCode Go API keys.
+func (s *ConfigSynthesizer) synthesizeOpenCodeGoKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	return s.synthesizeCodexStyleKeys(ctx, ctx.Config.OpenCodeGoKey, "opencode-go")
 }
 
 // synthesizeXAIKeys creates Auth entries for xAI API keys.

@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/homeplugins"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
@@ -45,6 +46,12 @@ type Service struct {
 	authRegWaiters         map[string]chan struct{}
 	configSequence         uint64
 	appliedRoutingState    *routingRuntimeState
+
+	// modelRoutingStateMu protects the active CCS projection identity.
+	modelRoutingStateMu      sync.RWMutex
+	activeModelRouting       *modelrouting.ActiveIdentityV2
+	modelRoutingLoadedAt     time.Time
+	activeModelRoutingConfig *modelrouting.Config
 
 	// proxyPoolPublisher scopes connection-pool fencing to this service, so a reload
 	// here never retires config snapshots served by another service.

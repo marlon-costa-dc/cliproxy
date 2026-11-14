@@ -238,31 +238,16 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 
 	state := existingModelState(auth, targetKey)
 	isSuspended := auth.Disabled || auth.Status == StatusDisabled
-	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
-		isSuspended = true
-	}
 	isQuotaExceeded := false
 	var suspendReason string
-	if state != nil {
-		if state.Status == StatusDisabled || state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
-			isSuspended = true
-		}
-		if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
-			isQuotaExceeded = true
-		}
-		if isSuspended {
-			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
-		}
+	if state != nil && state.Quota.Exceeded && state.Quota.Reason != "cloudflare challenge" && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
+		isQuotaExceeded = true
 	}
-	if len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
-		// With no per-model states, scheduling falls back to the credential-wide
-		// cooldown (isAuthBlockedForModel); the projection must agree with it.
-		// When states exist, unmatched models stay schedulable by design, so the
-		// credential-wide fields must not suspend them here either.
-		isSuspended = true
-	}
-	if isSuspended && suspendReason == "" {
+	if isSuspended {
 		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+		if suspendReason == "" {
+			suspendReason = "disabled"
+		}
 	}
 
 	return registry.ClientModelProjection{

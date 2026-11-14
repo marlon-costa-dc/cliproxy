@@ -1010,3 +1010,27 @@ func TestWriteErrorResponse_ContextCanceledUses499(t *testing.T) {
 		t.Fatalf("status = %d, want %d", recorder.Code, clienterror.StatusClientClosedRequest)
 	}
 }
+
+type overloadStreamExecutor struct{}
+
+func (overloadStreamExecutor) Identifier() string { return "codex" }
+
+func (overloadStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("server_is_overloaded")
+}
+
+func (overloadStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	return nil, errors.New("server_is_overloaded")
+}
+
+func (overloadStreamExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (overloadStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (overloadStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("server_is_overloaded")
+}

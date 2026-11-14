@@ -27,6 +27,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
+type oauthProxyStatusError struct {
+	StatusCodeValue int
+	Message         string
+}
+
+func (e *oauthProxyStatusError) Error() string { return e.Message }
+
 type proxyTestCodexOAuthService struct {
 	client   *http.Client
 	tokenURL string
@@ -54,7 +61,7 @@ func (s *proxyTestCodexOAuthService) ExchangeCodeForTokens(ctx context.Context, 
 		return nil, errRead
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &antigravity.HTTPStatusError{StatusCodeValue: resp.StatusCode, Message: string(body)}
+		return nil, &oauthProxyStatusError{StatusCodeValue: resp.StatusCode, Message: string(body)}
 	}
 	var payload struct {
 		Email string `json:"email"`
@@ -649,7 +656,7 @@ func TestStartOAuthV8AntigravityAndPluginSessionProxyAndRestartPersistence(t *te
 				identifier: "custom-sso",
 				startLogin: func(ctx context.Context, req pluginapi.AuthLoginStartRequest) (pluginapi.AuthLoginStartResponse, error) {
 					if req.Host.ProxyURL != proxyServer.URL {
-						return pluginapi.AuthLoginStartResponse{}, &antigravity.HTTPStatusError{StatusCodeValue: 500, Message: "unexpected host proxy"}
+						return pluginapi.AuthLoginStartResponse{}, &oauthProxyStatusError{StatusCodeValue: 500, Message: "unexpected host proxy"}
 					}
 					if _, errDo := req.HTTPClient.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodGet, URL: upstream.URL + "/plugin-start"}); errDo != nil {
 						return pluginapi.AuthLoginStartResponse{}, errDo

@@ -270,7 +270,7 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 	}
 	s.applyRetryConfig(commit.cfg)
 	store := s.resolveCooldownStateStore(commit.cfg)
-	if !s.coreManager.ApplyConfigWithCooldownStateStore(ctx, commit.cfg, store) {
+	if errApply := s.coreManager.ApplyConfigWithCooldownStateStore(ctx, commit.cfg, store); errApply != nil {
 		return false
 	}
 	s.coreManager.SetOAuthModelAlias(commit.cfg.OAuthModelAlias)

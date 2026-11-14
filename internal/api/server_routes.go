@@ -570,7 +570,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	if err != nil {
 		helps.AppendAPIResponseChunk(ctx, cfg, upstreamBody)
 		if selection != nil && resp.StatusCode == http.StatusUnauthorized {
-			s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, upstreamBody)
+			s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
 		}
 		helps.RecordAPIResponseError(ctx, cfg, err)
 		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": "Failed to read Codex search response"})
@@ -578,7 +578,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 	helps.AppendAPIResponseChunk(ctx, cfg, upstreamBody)
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
-		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, upstreamBody)
+		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
 		log.WithField("status", resp.StatusCode).Warnf("codex alpha search upstream request failed: %s", logging.SafeDiagnosticForLog(string(upstreamBody)))
 	}
 	if contentType := resp.Header.Get("Content-Type"); contentType != "" {

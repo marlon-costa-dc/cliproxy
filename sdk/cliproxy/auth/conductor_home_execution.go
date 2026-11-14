@@ -226,6 +226,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			}
 			var response cliproxyexecutor.Response
 			var errExecute error
+			didRefreshOnUnauthorized := false
 			var effectiveAuthMu sync.RWMutex
 			effectiveAuth := preparedAuth.Clone()
 			setEffectiveAuth := func(auth *Auth) {
@@ -262,14 +263,35 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			durationHomeExec := time.Since(startHomeExec)
 			if countTokens {
 				if _, fingerprint := getEffectiveAuth(); isUnauthorizedError(errExecute) {
-					m.reportHomeUnauthorized(execCtx, preparedAuth, selection.Provider, resultModel, fingerprint, extractErrorBody(errExecute))
+					m.reportHomeUnauthorized(execCtx, preparedAuth, selection.Provider, resultModel, fingerprint)
 				}
 			}
 			if errExecute != nil {
 				if hasUpstreamExecutionAttempt(errExecute) {
 					upstreamErr = errExecute
 				}
-				warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
+				refreshCtx := newUpstreamAttemptContext(execCtx)
+				if refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(refreshCtx, selection.Executor, preparedAuth, errExecute, didRefreshOnUnauthorized, true); errRefresh != nil {
+					errExecute = errRefresh
+					warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
+				} else if okRefresh {
+					preparedAuth = refreshed
+					m.replaceHomeSelectionAuth(selection, preparedAuth)
+					didRefreshOnUnauthorized = true
+					publishSelectedAuthMetadata(opts.Metadata, preparedAuth)
+					setEffectiveAuth(preparedAuth)
+					execCtx = newUpstreamAttemptContext(execCtx)
+					executorCtx = execCtx
+					executor = executorForAuth(selection.Executor, preparedAuth)
+					startHomeRetry := time.Now()
+					response, errExecute = execute()
+					errExecute = markUpstreamExecutionAttemptFromContext(execCtx, errExecute)
+					if errExecute != nil {
+						warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, time.Since(startHomeRetry), errExecute)
+					}
+				} else {
+					warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
+				}
 			}
 			result := Result{AuthID: preparedAuth.ID, Provider: selection.Provider, Model: resultModel, RouteModel: routeModel, Success: errExecute == nil, Options: execOpts}
 			if errExecute == nil && !countTokens && isEmptyCompletionPayload(response.Payload) {

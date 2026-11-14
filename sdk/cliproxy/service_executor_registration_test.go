@@ -116,9 +116,7 @@ func TestSyncPluginModelRuntimePreservesSDKExecutorUnlessForced(t *testing.T) {
 	}
 	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
 
-	if errSync := service.syncPluginModelRuntime(context.Background()); errSync != nil {
-		t.Fatalf("syncPluginModelRuntime() error = %v", errSync)
-	}
+	service.syncPluginModelRuntime(context.Background())
 	got, ok := manager.Executor(custom.Identifier())
 	if !ok || got != custom {
 		t.Fatalf("plugin model sync replaced SDK executor with %T", got)

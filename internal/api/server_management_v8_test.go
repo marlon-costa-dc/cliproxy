@@ -200,7 +200,7 @@ func TestManagementV8PluginOperationMigratesConfiguration(t *testing.T) {
 	h := management.NewHandler(cfg, path, nil)
 	h.SetLocalPassword("test-password")
 	reloads := make(chan *config.Config, 1)
-	h.SetConfigReloadHook(func(_ context.Context, next *config.Config) { reloads <- next })
+	h.SetConfigReloadHook(func(_ context.Context, next *config.Config) error { reloads <- next; return nil })
 	s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
 	s.managementRoutesEnabled.Store(true)
 	s.registerManagementRoutes()

@@ -330,6 +330,10 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewGitLabExecutor(cfg))
 	case "qoder":
 		s.coreManager.RegisterExecutor(executor.NewQoderExecutor(cfg))
+	case "opencode":
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor("opencode"))
+	case "opencode-go":
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor("opencode-go"))
 	case "xai":
 		if !forceReplace {
 			existingExecutor, hasExecutor := s.coreManager.Executor("xai")

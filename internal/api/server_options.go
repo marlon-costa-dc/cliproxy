@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -25,7 +26,9 @@ type serverOptionConfig struct {
 	postAuthHook          auth.PostAuthHook
 	postAuthPersistHook   auth.PostAuthHook
 	pluginHost            *pluginhost.Host
-	configReloadHook      func(context.Context, *config.Config)
+	configReloadHook      func(context.Context, *config.Config) error
+	configPublishHook     func(context.Context, []byte, *modelrouting.ActiveIdentityV2, bool) (*config.Config, *modelrouting.ActivationReceiptV2, error)
+	modelRoutingStateHook func() modelrouting.ActiveStateV2
 	exampleAPIKeySafeMode bool
 }
 
@@ -122,9 +125,23 @@ func WithPluginHost(host *pluginhost.Host) ServerOption {
 }
 
 // WithConfigReloadHook registers a callback used after management saves config changes.
-func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOption {
+func WithConfigReloadHook(hook func(context.Context, *config.Config) error) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.configReloadHook = hook
+	}
+}
+
+// WithConfigPublishHook installs the Service-owned atomic config publisher.
+func WithConfigPublishHook(hook func(context.Context, []byte, *modelrouting.ActiveIdentityV2, bool) (*config.Config, *modelrouting.ActivationReceiptV2, error)) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.configPublishHook = hook
+	}
+}
+
+// WithModelRoutingStateHook provides the active CAS identity to management reads.
+func WithModelRoutingStateHook(hook func() modelrouting.ActiveStateV2) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.modelRoutingStateHook = hook
 	}
 }
 

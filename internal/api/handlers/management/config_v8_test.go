@@ -31,7 +31,7 @@ func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
 	}
 	h := &Handler{cfg: cfg, configFilePath: path}
 	reloads := make(chan *config.Config, 8)
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) { reloads <- cfg })
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) error { reloads <- cfg; return nil })
 	router := gin.New()
 	router.GET("/v8/management/config", h.ConfigV8)
 	router.PATCH("/v8/management/config", h.ConfigV8)
@@ -297,7 +297,7 @@ func TestV8MigrationReloadSnapshotMatchesDisk(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: path}
 			reloads := make(chan *config.Config, 1)
-			h.SetConfigReloadHook(func(_ context.Context, next *config.Config) { reloads <- next })
+			h.SetConfigReloadHook(func(_ context.Context, next *config.Config) error { reloads <- next; return nil })
 			router := gin.New()
 			router.PATCH(tc.route, tc.handler(h))
 			response := httptest.NewRecorder()
@@ -654,7 +654,7 @@ plugins:
 	cfg.Home = config.HomeConfig{Enabled: true, Host: "runtime.example"}
 	h := &Handler{cfg: cfg, configFilePath: file}
 	reloads := make(chan *config.Config, 8)
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) { reloads <- cfg })
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) error { reloads <- cfg; return nil })
 	router := gin.New()
 	router.DELETE("/v8/management/config/*path", h.ConfigV8)
 	router.GET("/v8/management/config/*path", h.ConfigV8)

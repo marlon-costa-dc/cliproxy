@@ -191,15 +191,15 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 // ApplyConfigWithCooldownStateStore serializes a config update with its cooldown
 // store transition. It persists the resulting state to the captured old store before
 // exposing the resolved replacement store.
-func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *internalconfig.Config, store CooldownStateStore) bool {
+func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *internalconfig.Config, store CooldownStateStore) error {
 	if m == nil {
-		return false
+		return errors.New("apply config: manager is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 
 	m.configCooldownMu.Lock()
@@ -209,39 +209,52 @@ func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *in
 	m.mu.RUnlock()
 	m.setConfigSnapshotLocked(cfg)
 	if oldStore != nil && !m.persistCooldownStatesToLocked(ctx, oldStore) {
-		return false
+		if errContext := ctx.Err(); errContext != nil {
+			return errContext
+		}
+		return errors.New("apply config: persist cooldown state to previous store")
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cooldownStore != oldStore {
-		return false
+		return errors.New("apply config: cooldown store changed concurrently")
 	}
 	if m.pendingCooldownStateStore == oldStore {
 		m.pendingCooldownStateStore = nil
 	}
 	m.cooldownStore = store
-	return true
+	return nil
 }
 
 // PersistCooldownStates writes the current cooldown snapshot using ctx.
-func (m *Manager) PersistCooldownStates(ctx context.Context) {
-	m.persistCooldownStates(ctx)
-}
-
-// SwapCooldownStateStore persists cleared state to the old store before replacing it.
-// Persistence is deliberately performed without holding the manager lock.
-func (m *Manager) SwapCooldownStateStore(ctx context.Context, store CooldownStateStore, persistOld bool) bool {
+func (m *Manager) PersistCooldownStates(ctx context.Context) error {
 	if m == nil {
-		return false
+		return errors.New("persist cooldown states: manager is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
+	}
+	m.persistCooldownStates(ctx)
+	return nil
+}
+
+// SwapCooldownStateStore persists cleared state to the old store before replacing it.
+// Persistence is deliberately performed without holding the manager lock.
+func (m *Manager) SwapCooldownStateStore(ctx context.Context, store CooldownStateStore, persistOld bool) error {
+	if m == nil {
+		return errors.New("swap cooldown store: manager is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if errContext := ctx.Err(); errContext != nil {
+		return errContext
 	}
 	m.configCooldownMu.Lock()
 	defer m.configCooldownMu.Unlock()
@@ -254,21 +267,24 @@ func (m *Manager) SwapCooldownStateStore(ctx context.Context, store CooldownStat
 		storeToPersist = oldStore
 	}
 	if storeToPersist != nil && !m.persistCooldownStatesToLocked(ctx, storeToPersist) {
-		return false
+		if errContext := ctx.Err(); errContext != nil {
+			return errContext
+		}
+		return errors.New("swap cooldown store: persist previous store")
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cooldownStore != oldStore {
-		return false
+		return errors.New("swap cooldown store: store changed concurrently")
 	}
 	if m.pendingCooldownStateStore == storeToPersist {
 		m.pendingCooldownStateStore = nil
 	}
 	m.cooldownStore = store
-	return true
+	return nil
 }
 
 func (m *Manager) cooldownDisabledForAuth(auth *Auth) bool {
@@ -886,9 +902,9 @@ func isStaleExecutionResult(result Result, current *Auth) bool {
 }
 
 // MarkResult records an execution result and notifies hooks.
-func (m *Manager) MarkResult(ctx context.Context, result Result) {
+func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 	if result.AuthID == "" {
-		return
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -897,12 +913,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		if policy := m.ResultPolicy(); policy != nil {
 			result = policy.ApplyResultPolicy(ctx, result)
 			if result.AuthID == "" {
-				return
+				return nil
 			}
 		}
 	}
 	modelKey := canonicalModelKey(result.Model)
 
+	var persistErr error
 	var authSnapshot *Auth
 	cooldownStateChanged := false
 	scheduleUnauthorizedRefresh := false
@@ -914,6 +931,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	defer releaseMutation()
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+		authBefore := auth.Clone()
 		if isStaleExecutionResult(result, auth) {
 			staleEpoch := result.RegistrationEpoch > 0 && result.RegistrationEpoch < auth.RegistrationEpoch
 			if !staleEpoch && rejectsToken && result.AccessToken != "" {
@@ -926,7 +944,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			releaseMutation()
 			m.hook.OnResult(ctx, result)
 			m.publishErrorEvent(result, nil)
-			return
+			return nil
 		}
 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
 			if m != nil {
@@ -1404,11 +1422,20 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persistLocked(ctx, auth)
-		authSnapshot = auth.Clone()
-		if trackCooldownState {
-			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
-			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+		persistErr = m.persistLocked(ctx, auth)
+		if persistErr != nil {
+			// The store rejected the result state. Restore the last published
+			// credential so a failed commit is never observable in memory.
+			*auth = *authBefore
+			authSnapshot = authBefore.Clone()
+			trackCooldownState = false
+			scheduleUnauthorizedRefresh = false
+		} else {
+			authSnapshot = auth.Clone()
+			if trackCooldownState {
+				cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
+				cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+			}
 		}
 	}
 	m.mu.Unlock()
@@ -1450,9 +1477,37 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
 	}
 
+	// Apply terminal suspension after projections: a projection only reports
+	// quota/disabled state, so the permanent failure decision is authoritative.
+	if !result.Success && result.Error != nil && persistErr == nil {
+		reason := terminalSuspensionReason(result.Error)
+		if reason == "" && statusCodeFromResult(result.Error) == http.StatusTooManyRequests && result.RetryAfter != nil {
+			// An explicit upstream Retry-After turns a 429 into a suspended route.
+			reason = "quota"
+		}
+		if reason != "" {
+			key := modelKey
+			if key == "" {
+				key = canonicalModelKey(result.Model)
+			}
+			reg := registry.GetGlobalRegistry()
+			if reason == "invalid_api_key" || reason == "quota" {
+				for _, model := range modelsForRegisteredAuth(result.AuthID) {
+					reg.SuspendClientModel(result.AuthID, model, reason)
+				}
+				if key != "" {
+					reg.SuspendClientModel(result.AuthID, key, reason)
+				}
+			} else if key != "" {
+				reg.SuspendClientModel(result.AuthID, key, reason)
+			}
+		}
+	}
+
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
 	m.updateSessionAffinity(result)
+	return persistErr
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {
@@ -1487,6 +1542,39 @@ func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth
 }
 
 // reportHomeResult only observes a Home dispatch result and never updates local auth state.
+func joinExecutionResultError(operationErr, recordErr error) error {
+	if recordErr == nil {
+		return operationErr
+	}
+	recordErr = &executionResultRecordError{cause: recordErr}
+	return errors.Join(operationErr, recordErr)
+}
+
+// executionResultRecordError marks a persistence/observation failure as local
+// executor infrastructure. Candidate failover must never conceal it.
+type executionResultRecordError struct {
+	cause error
+}
+
+func (e *executionResultRecordError) Error() string {
+	if e == nil || e.cause == nil {
+		return "record execution result"
+	}
+	return "record execution result: " + e.cause.Error()
+}
+
+func (e *executionResultRecordError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func isExecutionResultRecordError(err error) bool {
+	var recordErr *executionResultRecordError
+	return errors.As(err, &recordErr) && recordErr != nil
+}
+
 func (m *Manager) reportHomeResult(ctx context.Context, result Result, auth *Auth) {
 	if m == nil || result.AuthID == "" {
 		return
@@ -2697,6 +2785,33 @@ func isInvalidAPIKeyResultError(err *Error) bool {
 		return false
 	}
 	return isInvalidAPIKeyErrorMessage(err.Code) || isInvalidAPIKeyErrorMessage(err.Message)
+}
+
+// terminalSuspensionReason classifies permanent credential/model failures that
+// must suspend the route in the registry. Quota and transient cooldowns are
+// intentionally excluded; they are enforced by selection and recovery time.
+func terminalSuspensionReason(err *Error) string {
+	switch {
+	case err == nil:
+		return ""
+	case isCloudflareChallengeResultError(err):
+		return ""
+	case isModelSupportResultError(err):
+		return "model_not_supported"
+	case isInvalidGrantResultError(err):
+		return "invalid_grant"
+	case isInvalidAPIKeyResultError(err):
+		return "invalid_api_key"
+	}
+	switch statusCodeFromResult(err) {
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusPaymentRequired, http.StatusForbidden:
+		return "payment_required"
+	case http.StatusNotFound:
+		return "not_found"
+	}
+	return ""
 }
 
 func isModelSupportResultError(err *Error) bool {

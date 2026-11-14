@@ -58,7 +58,7 @@ func TestConfigCommitDoesNotHoldCommitMutexDuringCooldownPersistence(t *testing.
 	service := &Service{cfg: &config.Config{}, coreManager: manager}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	applyDone := make(chan error, 1)
+	applyDone := make(chan bool, 1)
 	go func() {
 		applyDone <- service.applyConfigUpdateWithAuthSynthesis(ctx, &config.Config{DisableCooling: true}, false)
 	}()
@@ -70,7 +70,7 @@ func TestConfigCommitDoesNotHoldCommitMutexDuringCooldownPersistence(t *testing.
 
 	commitDone := make(chan struct{})
 	go func() {
-		_, _ = service.commitConfigUpdate(&config.Config{})
+		_ = service.commitConfigUpdate(&config.Config{})
 		close(commitDone)
 	}()
 	select {
@@ -81,9 +81,9 @@ func TestConfigCommitDoesNotHoldCommitMutexDuringCooldownPersistence(t *testing.
 
 	cancel()
 	select {
-	case errApply := <-applyDone:
-		if !errors.Is(errApply, context.Canceled) {
-			t.Fatalf("config runtime apply error = %v, want context.Canceled", errApply)
+	case applied := <-applyDone:
+		if applied {
+			t.Fatal("config runtime apply succeeded after cancellation")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("config runtime apply did not honor cooldown persistence cancellation")
@@ -2702,9 +2702,9 @@ func readRegistryTestRedisCommand(reader *bufio.Reader) ([]string, error) {
 
 func mustCommitConfig(t *testing.T, service *Service, cfg *config.Config) configCommit {
 	t.Helper()
-	commit, errCommit := service.commitConfigUpdate(cfg)
-	if errCommit != nil {
-		t.Fatalf("commitConfigUpdate() error = %v", errCommit)
+	commit := service.commitConfigUpdate(cfg)
+	if commit.cfg == nil {
+		t.Fatal("commitConfigUpdate() returned an empty commit")
 	}
 	return commit
 }
@@ -2718,10 +2718,10 @@ func TestServiceSkipsStaleLocalConfigRuntimeApply(t *testing.T) {
 	}
 	first := mustCommitConfig(t, service, &config.Config{Routing: internalconfig.RoutingConfig{Strategy: "fill-first"}})
 	second := mustCommitConfig(t, service, &config.Config{Routing: internalconfig.RoutingConfig{Strategy: "round-robin"}})
-	if errApply := service.applyConfigRuntime(context.Background(), second, false); errApply != nil {
-		t.Fatalf("newest config runtime apply error = %v", errApply)
+	if !service.applyConfigRuntime(context.Background(), second, false) {
+		t.Fatal("newest config runtime apply failed")
 	}
-	if errApply := service.applyConfigRuntime(context.Background(), first, false); errApply == nil {
+	if service.applyConfigRuntime(context.Background(), first, false) {
 		t.Fatal("stale config runtime apply succeeded")
 	}
 	if got, want := strings.Join(applied, ","), "round-robin"; got != want {
@@ -2741,10 +2741,10 @@ func TestServiceAppliesSameValueNewestSelectorCommit(t *testing.T) {
 	service := &Service{cfg: &config.Config{}, coreManager: manager}
 	older := mustCommitConfig(t, service, &config.Config{Routing: internalconfig.RoutingConfig{Strategy: "fill-first"}})
 	newer := mustCommitConfig(t, service, &config.Config{Routing: internalconfig.RoutingConfig{Strategy: "fill-first"}})
-	if errApply := service.applyConfigRuntime(context.Background(), newer, false); errApply != nil {
-		t.Fatalf("newest same-value config runtime apply error = %v", errApply)
+	if applied := service.applyConfigRuntime(context.Background(), newer, false); !applied {
+		t.Fatal("newest same-value config runtime apply error = false")
 	}
-	if errApply := service.applyConfigRuntime(context.Background(), older, false); errApply == nil {
+	if applied := service.applyConfigRuntime(context.Background(), older, false); applied {
 		t.Fatal("stale same-value config runtime apply succeeded")
 	}
 
@@ -2783,8 +2783,8 @@ func TestBuilderPreservesInitialSelectorForSameRouting(t *testing.T) {
 	}
 	defer initialAffinity.Stop()
 	commit := mustCommitConfig(t, service, cfg)
-	if errApply := service.applyConfigRuntime(context.Background(), commit, false); errApply != nil {
-		t.Fatalf("same-routing config runtime apply error = %v", errApply)
+	if applied := service.applyConfigRuntime(context.Background(), commit, false); !applied {
+		t.Fatal("same-routing config runtime apply error = false")
 	}
 	if got := service.coreManager.Selector(); got != initialSelector {
 		t.Fatalf("same-routing selector = %p, want initial selector %p", got, initialSelector)
@@ -2800,8 +2800,8 @@ func TestServiceApplyConfigRuntimePreservesSelectorForUnchangedRouting(t *testin
 		SessionAffinity:    true,
 		SessionAffinityTTL: "1h",
 	}})
-	if errApply := service.applyConfigRuntime(context.Background(), initial, false); errApply != nil {
-		t.Fatalf("initial config runtime apply error = %v", errApply)
+	if applied := service.applyConfigRuntime(context.Background(), initial, false); !applied {
+		t.Fatal("initial config runtime apply error = false")
 	}
 	initialSelector := manager.Selector()
 	initialAffinity, ok := initialSelector.(*coreauth.SessionAffinitySelector)
@@ -2823,13 +2823,13 @@ func TestServiceApplyConfigRuntimePreservesSelectorForUnchangedRouting(t *testin
 		},
 		UsageStatisticsEnabled: true,
 	})
-	if errApply := service.applyConfigRuntime(context.Background(), newer, false); errApply != nil {
-		t.Fatalf("newest same-routing config runtime apply error = %v", errApply)
+	if applied := service.applyConfigRuntime(context.Background(), newer, false); !applied {
+		t.Fatal("newest same-routing config runtime apply error = false")
 	}
 	if got := manager.Selector(); got != initialSelector {
 		t.Fatalf("same-routing selector = %p, want original %p", got, initialSelector)
 	}
-	if errApply := service.applyConfigRuntime(context.Background(), older, false); errApply == nil {
+	if applied := service.applyConfigRuntime(context.Background(), older, false); applied {
 		t.Fatal("stale same-routing config runtime apply succeeded")
 	}
 	if got := manager.Selector(); got != initialSelector {
@@ -2841,8 +2841,8 @@ func TestServiceApplyConfigRuntimePreservesSelectorForUnchangedRouting(t *testin
 		SessionAffinity:    true,
 		SessionAffinityTTL: "1h",
 	}})
-	if errApply := service.applyConfigRuntime(context.Background(), changed, false); errApply != nil {
-		t.Fatalf("changed-routing config runtime apply error = %v", errApply)
+	if applied := service.applyConfigRuntime(context.Background(), changed, false); !applied {
+		t.Fatal("changed-routing config runtime apply error = false")
 	}
 	changedSelector := manager.Selector()
 	if changedSelector == initialSelector {
@@ -2862,8 +2862,8 @@ func TestServiceApplyConfigRuntimePreservesSelectorForUnchangedRouting(t *testin
 		},
 		UsageStatisticsEnabled: false,
 	})
-	if errApply := service.applyConfigRuntime(context.Background(), unrelated, false); errApply != nil {
-		t.Fatalf("unrelated config runtime apply error = %v", errApply)
+	if applied := service.applyConfigRuntime(context.Background(), unrelated, false); !applied {
+		t.Fatal("unrelated config runtime apply error = false")
 	}
 	if got := manager.Selector(); got != changedSelector {
 		t.Fatalf("unrelated-update selector = %p, want changed selector %p", got, changedSelector)

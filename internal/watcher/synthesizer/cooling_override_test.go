@@ -1,6 +1,7 @@
 package synthesizer
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,34 @@ import (
 
 func boolPointer(value bool) *bool {
 	return &value
+}
+
+func modelPipelineCompatModel(routeChannel, modelID string) config.OpenAICompatibilityModel {
+	return config.OpenAICompatibilityModel{
+		Name:                   modelID,
+		Alias:                  modelID,
+		CatalogProviderID:      routeChannel,
+		CatalogModelID:         modelID,
+		CatalogRouteProviderID: routeChannel,
+		CatalogRouteModelID:    modelID,
+		Protocols:              []string{"openai_chat"},
+	}
+}
+
+func modelPipelineOpenAICompatibility(name, baseURL string, apiKeys ...string) config.OpenAICompatibility {
+	canonicalName := strings.ToLower(strings.TrimSpace(name))
+	routeChannel := "openai-compatible-" + canonicalName
+	entries := make([]config.OpenAICompatibilityAPIKey, len(apiKeys))
+	for index, apiKey := range apiKeys {
+		entries[index] = config.OpenAICompatibilityAPIKey{APIKey: apiKey, QuotaDomain: routeChannel}
+	}
+	return config.OpenAICompatibility{
+		Name:          name,
+		BaseURL:       baseURL,
+		RouteChannel:  routeChannel,
+		APIKeyEntries: entries,
+		Models:        []config.OpenAICompatibilityModel{modelPipelineCompatModel(routeChannel, canonicalName+"-model")},
+	}
 }
 
 func TestConfigSynthesizerPreservesExplicitFalseCoolingOverrides(t *testing.T) {

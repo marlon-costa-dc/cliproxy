@@ -274,6 +274,9 @@ type Response struct {
 	Metadata map[string]any
 	// Headers carries upstream HTTP response headers for passthrough to clients.
 	Headers http.Header
+	// DownstreamHeaders carries trusted headers produced inside CLIProxy after
+	// the upstream response, such as route selection evidence.
+	DownstreamHeaders http.Header
 }
 
 // StreamChunk represents a single streaming payload unit emitted by provider executors.
@@ -292,6 +295,12 @@ type StreamChunk struct {
 type StreamResult struct {
 	// Headers carries upstream HTTP response headers from the initial connection.
 	Headers http.Header
+	// DownstreamHeaders carries trusted headers produced inside CLIProxy after
+	// the upstream response, such as route selection evidence.
+	DownstreamHeaders http.Header
+	// Complete is a trusted local lifecycle callback. Handlers call it exactly
+	// once when the stream terminates, forwarding the terminal error if any.
+	Complete func(error)
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
 }

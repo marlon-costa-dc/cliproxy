@@ -278,26 +278,24 @@ func TestFileSnapshotFencedByDisableToggle(t *testing.T) {
 	}
 }
 
-// The auth-files PATCH's save fails after a scan read the file: nothing changed on disk,
-// so the scan's snapshot still applies and brings the runtime back to the file's content.
-func TestFileSnapshotAppliedAfterFailedSave(t *testing.T) {
+// The auth-files PATCH's save fails: the update must fail loud and the runtime
+// must keep the last published credential; nothing changed on disk.
+func TestFileSnapshotNotAppliedAfterFailedSave(t *testing.T) {
 	ctx := context.Background()
 	manager, store, path := newTrafficManager(t)
 
-	snapshot := readTrafficSnapshot(t, path, "new-model")
 	store.failNext = errors.New("disk full")
 	patched, _ := manager.GetByID(trafficAuthID)
 	patched.Metadata["prefix"] = "pfx-2"
 	patched.Prefix = "pfx-2"
-	if _, errUpdate := manager.Update(ctx, patched); errUpdate != nil {
-		t.Fatalf("update whose save fails: %v", errUpdate)
+	if _, errUpdate := manager.Update(ctx, patched); errUpdate == nil {
+		t.Fatal("update whose save fails succeeded")
 	}
-	if store.failNext != nil || diskField(t, path, "prefix") != "pfx-1" {
+	if store.failNext == nil || diskField(t, path, "prefix") != "pfx-1" {
 		t.Fatalf("the save did not fail: disk prefix %v", diskField(t, path, "prefix"))
 	}
-	requireApplied(t, manager, snapshot)
-	if got, _ := manager.GetByID(trafficAuthID); got.Prefix != "pfx-1" || got.Attributes["excluded_models"] != "new-model" {
-		t.Fatalf("runtime prefix = %q excluded_models = %q, want the file's pfx-1 and new-model", got.Prefix, got.Attributes["excluded_models"])
+	if got, _ := manager.GetByID(trafficAuthID); got.Prefix != "pfx-1" {
+		t.Fatalf("runtime prefix = %q, want the last published pfx-1", got.Prefix)
 	}
 }
 

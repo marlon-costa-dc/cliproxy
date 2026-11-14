@@ -314,9 +314,7 @@ func TestRegisterConfigAPIKeyAuthsCodexModelModes(t *testing.T) {
 			}}}
 			manager := coreauth.NewManager(nil, nil, nil)
 			service := &Service{cfg: cfg, coreManager: manager}
-			if errRegister := service.registerConfigAPIKeyAuths(context.Background(), cfg); errRegister != nil {
-				t.Fatalf("registerConfigAPIKeyAuths() error = %v", errRegister)
-			}
+			service.registerConfigAPIKeyAuths(context.Background(), cfg)
 
 			auths := manager.List()
 			modelRegistry := internalregistry.GetGlobalRegistry()

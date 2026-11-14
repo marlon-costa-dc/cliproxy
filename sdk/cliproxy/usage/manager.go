@@ -104,6 +104,7 @@ type Detail struct {
 	CacheCreationTokens int64
 	TotalTokens         int64
 	TokenBreakdown      TokenBreakdown
+	Cost                CostBreakdown
 	ResponseServiceTier string
 
 	CacheCreation5mTokens    *int64

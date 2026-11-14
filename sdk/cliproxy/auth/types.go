@@ -65,6 +65,13 @@ type Auth struct {
 	Provider string `json:"provider"`
 	// Prefix optionally namespaces models for routing (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `json:"prefix,omitempty"`
+	// QuotaDomain identifies the quota pool for this exact credential.
+	QuotaDomain string `json:"quota_domain,omitempty"`
+	// RouteChannel is the exact routing identity declared by configuration.
+	RouteChannel string `json:"-"`
+	// OpenAICompatibilityIndex is the typed reference to the provider config
+	// entry that created this auth. Nil for non-OpenAI-compatible origins.
+	OpenAICompatibilityIndex *int `json:"-"`
 	// FileName stores the relative or absolute path of the backing auth file.
 	FileName string `json:"-"`
 	// Storage holds the token persistence implementation used during login flows.
@@ -496,6 +503,10 @@ func (a *Auth) Clone() *Auth {
 	}
 	if a.ProxyConnectionPool != nil {
 		copyAuth.ProxyConnectionPool = a.ProxyConnectionPool.Clone()
+	}
+	if a.OpenAICompatibilityIndex != nil {
+		index := *a.OpenAICompatibilityIndex
+		copyAuth.OpenAICompatibilityIndex = &index
 	}
 	if a.Metadata != nil {
 		copyAuth.Metadata = cloneMetadataMap(a.Metadata)

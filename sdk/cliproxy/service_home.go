@@ -150,8 +150,8 @@ func (s *Service) applyHomeOverlayWithClient(ctx context.Context, remoteCfg *con
 		}
 	}
 	if work.config != nil {
-		if errApply := s.applyConfigUpdateWithAuthSynthesis(ctx, work.config, true); errApply != nil {
-			return fmt.Errorf("apply home config runtime: %w", errApply)
+		if !s.applyConfigUpdateWithAuthSynthesis(ctx, work.config, true) {
+			return fmt.Errorf("apply home config runtime: service configuration is not ready")
 		}
 		work.committed = true
 	}
@@ -237,9 +237,9 @@ func (s *Service) commitHomeConfig(lifetimeCtx, homeCtx context.Context, generat
 	if !s.homeLifetimeActive(homeCtx, lifetimeCtx, generation) {
 		return context.Canceled
 	}
-	commit, errCommit := s.commitConfigUpdate(work.config)
-	if errCommit != nil {
-		return errCommit
+	commit := s.commitConfigUpdate(work.config)
+	if commit.cfg == nil {
+		return fmt.Errorf("commit home config: empty commit")
 	}
 	work.config = commit.cfg
 	work.configCommit = commit
@@ -753,8 +753,8 @@ func (s *Service) runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx context
 		if !s.homeLifetimeActive(homeCtx, lifetimeCtx, generation) {
 			return
 		}
-		if errApply := s.applyConfigRuntime(lifetimeCtx, work.configCommit, true); errApply != nil {
-			log.WithError(errApply).Error("home config runtime application failed")
+		if !s.applyConfigRuntime(lifetimeCtx, work.configCommit, true) {
+			log.Error("home config runtime application failed")
 			s.cancelServiceRun()
 			return
 		}

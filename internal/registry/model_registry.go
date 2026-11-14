@@ -14,6 +14,7 @@ import (
 	"time"
 
 	misc "github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -112,6 +113,22 @@ type ModelInfo struct {
 	// IsCompat enables compatibility handling for this configured API-key model.
 	// It is internal metadata and is not exposed in model listings.
 	IsCompat bool `json:"-"`
+
+	// CatalogProviderID is the explicit models.dev canonical provider identity.
+	CatalogProviderID string `json:"-"`
+	// CatalogModelID is the explicit models.dev canonical model identity. It is
+	// distinct from CanonicalModelID, which tracks runtime alias lineage.
+	CatalogModelID string `json:"-"`
+	// CatalogRouteProviderID is the explicit models.dev provider host for this route.
+	CatalogRouteProviderID string `json:"-"`
+	// CatalogRouteModelID is the exact model key below the models.dev provider host.
+	CatalogRouteModelID string `json:"-"`
+	// VariantID marks this record as a model-owned variant when non-empty.
+	VariantID string `json:"-"`
+	// Protocols names the exact wire protocols supported by this route.
+	Protocols []string `json:"-"`
+	// Pricing preserves exact catalog decimals for the selected route.
+	Pricing *modelrouting.Pricing `json:"pricing,omitempty"`
 }
 
 // ModelConfig holds optional runtime overrides for a model definition.
@@ -178,6 +195,19 @@ type ModelRegistration struct {
 	Providers map[string]int
 	// SuspendedClients tracks temporarily disabled clients keyed by client ID
 	SuspendedClients map[string]string
+}
+
+// RegisteredRouteSnapshot is an internal management-plane fact. ClientID is
+// never serialized; the inventory boundary hashes it before publication.
+type RegisteredRouteSnapshot struct {
+	ClientID         string
+	RouteChannel     string
+	RuntimeModelID   string
+	Model            *ModelInfo
+	QuotaBlocked     bool
+	QuotaResetsAt    *time.Time
+	SuspensionReason string
+	LastUpdated      time.Time
 }
 
 // ModelRegistryHook provides optional callbacks for external integrations to track model list changes.
@@ -858,6 +888,12 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	}
 	if len(model.SupportedOutputModalities) > 0 {
 		copyModel.SupportedOutputModalities = append([]string(nil), model.SupportedOutputModalities...)
+	}
+	if len(model.Protocols) > 0 {
+		copyModel.Protocols = append([]string(nil), model.Protocols...)
+	}
+	if model.Pricing != nil {
+		copyModel.Pricing = modelrouting.ClonePricing(model.Pricing)
 	}
 	if model.Thinking != nil {
 		copyThinking := *model.Thinking
@@ -1560,6 +1596,56 @@ func modelRegistrationAvailability(registration *ModelRegistration, now time.Tim
 
 	available := effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0)
 	return available, expiresAt
+}
+
+// RegisteredRouteSnapshots returns every credential/model registration for the
+// management inventory builder. Callers must hash ClientID before serialization.
+func (r *ModelRegistry) RegisteredRouteSnapshots() []RegisteredRouteSnapshot {
+	now := time.Now().UTC()
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	result := make([]RegisteredRouteSnapshot, 0)
+	for clientID, modelIDs := range r.clientModels {
+		provider := r.clientProviders[clientID]
+		for _, modelID := range modelIDs {
+			registration := r.models[modelID]
+			if registration == nil {
+				continue
+			}
+			info := registration.Info
+			if byClient := r.clientModelInfos[clientID]; byClient != nil && byClient[modelID] != nil {
+				info = byClient[modelID]
+			} else if registration.InfoByProvider[provider] != nil {
+				info = registration.InfoByProvider[provider]
+			}
+			if info == nil {
+				continue
+			}
+			snapshot := RegisteredRouteSnapshot{
+				ClientID: clientID, RouteChannel: provider, RuntimeModelID: modelID,
+				Model: cloneModelInfo(info), SuspensionReason: registration.SuspendedClients[clientID],
+				LastUpdated: registration.LastUpdated.UTC(),
+			}
+			if markedAt := registration.QuotaExceededClients[clientID]; markedAt != nil {
+				resetsAt := markedAt.Add(modelQuotaExceededWindow).UTC()
+				if now.Before(resetsAt) {
+					snapshot.QuotaBlocked = true
+					snapshot.QuotaResetsAt = &resetsAt
+				}
+			}
+			result = append(result, snapshot)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].RuntimeModelID != result[j].RuntimeModelID {
+			return result[i].RuntimeModelID < result[j].RuntimeModelID
+		}
+		if result[i].RouteChannel != result[j].RouteChannel {
+			return result[i].RouteChannel < result[j].RouteChannel
+		}
+		return result[i].ClientID < result[j].ClientID
+	})
+	return result
 }
 
 // GetAvailableModelInfos returns cloned metadata for all currently available models.

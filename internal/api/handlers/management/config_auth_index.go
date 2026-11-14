@@ -783,7 +783,7 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 }
 
 // codexStyleKeysWithAuthIndex is the generic auth-index resolver for config
-// key slices that share the CodexKey layout (OpenCode, OpenCodeGo, Poolside).
+// key slices that share the CodexKey layout (OpenCode, OpenCodeGo).
 // provider is used to derive the stable auth ID prefix (e.g. "opencode:apikey").
 func (h *Handler) codexStyleKeysWithAuthIndex(entries []config.CodexKey, provider string) []codexKeyWithAuthIndex {
 	if h == nil {
@@ -820,10 +820,6 @@ func (h *Handler) openCodeKeysWithAuthIndex() []codexKeyWithAuthIndex {
 
 func (h *Handler) openCodeGoKeysWithAuthIndex() []codexKeyWithAuthIndex {
 	return h.codexStyleKeysWithAuthIndex(h.cfg.OpenCodeGoKey, "opencode-go")
-}
-
-func (h *Handler) poolsideKeysWithAuthIndex() []codexKeyWithAuthIndex {
-	return h.codexStyleKeysWithAuthIndex(h.cfg.PoolsideKey, "poolside")
 }
 
 func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {

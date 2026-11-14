@@ -691,7 +691,10 @@ func (s *Service) configureCooldownStateStoreContext(ctx context.Context, cfg *c
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
-	return s.coreManager.SwapCooldownStateStore(ctx, s.resolveCooldownStateStore(cfg), persistOld)
+	if errSwap := s.coreManager.SwapCooldownStateStore(ctx, s.resolveCooldownStateStore(cfg), persistOld); errSwap != nil {
+		return false
+	}
+	return true
 }
 
 func (s *Service) resolveCooldownStateStore(cfg *config.Config) coreauth.CooldownStateStore {

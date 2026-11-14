@@ -187,6 +187,12 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			models = registry.GetCodexProModels()
 		}
 		models = applyExcludedModels(models, excluded)
+	case "opencode":
+		models = registry.GetOpenCodeModels("zen")
+		models = applyExcludedModels(models, excluded)
+	case "opencode-go":
+		models = registry.GetOpenCodeModels("go")
+		models = applyExcludedModels(models, excluded)
 	case "devin":
 		models = registry.GetDevinModels()
 		models = applyExcludedModels(models, excluded)

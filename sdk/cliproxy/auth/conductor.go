@@ -206,6 +206,7 @@ type Manager struct {
 	providerOffsets             map[string]int
 	homeDispatchBundle          atomic.Pointer[HomeDispatchBundle]
 	fallbackChain               FallbackChainConductor
+	modelRouting                modelRoutingPointer
 	homeInFlightPublisherConfig atomic.Pointer[HomeInFlightPublisherConfig]
 
 	// Retry controls request retry behavior.
@@ -275,6 +276,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
 	manager.apiKeyModelRouting.Store(&apiKeyModelRoutingSnapshot{config: &internalconfig.Config{}})
+	manager.modelRouting.Store(compileModelRouting(nil))
 	defaultInFlightConfig, errInFlightConfig := HomeInFlightPublisherConfigFromConfig(internalconfig.DefaultCredentialInFlightConfig())
 	if errInFlightConfig == nil {
 		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)

@@ -4,6 +4,8 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
+
 // ServerResponseCompression mirrors SDKConfig.ResponseCompression on the outer
 // Config so JSON and YAML round trips preserve server.response-compression.
 // The canonical storage remains SDKConfig.ResponseCompression; read the
@@ -175,6 +177,12 @@ type Config struct {
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
+	// OpenCodeKey defines OpenCode API key configurations using the same structure as Codex API keys.
+	OpenCodeKey []OpenCodeKey `yaml:"opencode-api-key" json:"opencode-api-key"`
+
+	// OpenCodeGoKey defines OpenCode Go API key configurations using the same structure as Codex API keys.
+	OpenCodeGoKey []OpenCodeGoKey `yaml:"opencode-go-api-key" json:"opencode-go-api-key"`
+
 	// XAIKey defines xAI API key configurations using the same structure as Codex API keys.
 	XAIKey []XAIKey `yaml:"xai-api-key" json:"xai-api-key"`
 
@@ -238,6 +246,9 @@ type Config struct {
 
 	// OAuthSettings defines per-channel model settings (such as max-context-length) applied to OAuth/file-backed auth entries.
 	OAuthSettings map[string][]OAuthModelSetting `yaml:"oauth-settings,omitempty" json:"oauth-settings,omitempty"`
+
+	// ModelRouting is the versioned AI Hub projection rendered exclusively by CCS.
+	ModelRouting *modelrouting.Config `yaml:"model-routing,omitempty" json:"model-routing,omitempty"`
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`

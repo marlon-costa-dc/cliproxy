@@ -459,7 +459,13 @@ func hasRequestFaultBody(err error) bool {
 	if err == nil {
 		return false
 	}
-	body := strings.TrimSpace(err.Error())
+	return HasRequestFaultBodyString(err.Error())
+}
+
+// HasRequestFaultBodyString reports whether a raw JSON body carries a
+// request-scoped fault code or type that must not fail over across credentials.
+func HasRequestFaultBodyString(raw string) bool {
+	body := strings.TrimSpace(raw)
 	if body == "" || !ojson.Valid(body) {
 		return false
 	}

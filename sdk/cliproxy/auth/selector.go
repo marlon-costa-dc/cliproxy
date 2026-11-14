@@ -858,6 +858,22 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 	return available[0], nil
 }
 
+// ModelAvailability reports why selection skips a credential for a model.
+type ModelAvailability struct {
+	// Blocked reports that selection skips the credential at the instant.
+	Blocked bool
+	// QuotaCooldown reports that the active block is a quota cooldown.
+	QuotaCooldown bool
+	// RecoverAt is when a time-bound block ends; it is zero for open-ended blocks.
+	RecoverAt time.Time
+}
+
+// AvailabilityForModel returns the selection availability of auth for model at now.
+func AvailabilityForModel(auth *Auth, model string, now time.Time) ModelAvailability {
+	blocked, reason, next := isAuthBlockedForModel(auth, model, now)
+	return ModelAvailability{Blocked: blocked, QuotaCooldown: blocked && reason == blockReasonCooldown, RecoverAt: next}
+}
+
 // IsAuthAvailableForModel reports whether auth is eligible for selection on model at now.
 func IsAuthAvailableForModel(auth *Auth, model string, now time.Time) bool {
 	blocked, _, _ := isAuthBlockedForModel(auth, model, now)

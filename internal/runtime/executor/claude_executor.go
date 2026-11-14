@@ -348,6 +348,9 @@ func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor {
 
 func (e *ClaudeExecutor) Identifier() string { return "claude" }
 
+// ProviderKey returns the provider key this executor serves.
+func (e *ClaudeExecutor) ProviderKey() string { return "claude" }
+
 func (e *ClaudeExecutor) claudeWebSearchResultCacheScope(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, originalPayload []byte) (string, time.Duration, int) {
 	if e == nil || e.cfg == nil || !e.cfg.Client.Codex.WebSearchResultCache.Enabled {
 		return "", 0, 0

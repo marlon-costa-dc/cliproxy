@@ -317,6 +317,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Name = strings.TrimSpace(e.Name)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.RouteChannel = strings.TrimSpace(e.RouteChannel)
 		e.Headers = NormalizeHeaders(e.Headers)
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
@@ -381,7 +382,7 @@ func sanitizeMetaKeyEntries(entries []MetaKey) []MetaKey {
 	return out
 }
 
-func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
+func normalizeCodexKeyEntries(entries []CodexKey, dropEmptyBaseURL bool) []CodexKey {
 	if len(entries) == 0 {
 		return entries
 	}
@@ -392,12 +393,35 @@ func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
-		if e.BaseURL == "" {
+		if dropEmptyBaseURL && e.BaseURL == "" {
 			continue
 		}
 		out = append(out, e)
 	}
 	return out
+}
+
+func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
+	return normalizeCodexKeyEntries(entries, true)
+}
+
+// SanitizeOpenCodeKeys normalizes OpenCode (Zen) key entries. Entries are not
+// removed when BaseURL is empty: the OpenCode executor applies its gateway
+// default, so an empty BaseURL is valid and must survive config load.
+func (cfg *Config) SanitizeOpenCodeKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenCodeKey = normalizeCodexKeyEntries(cfg.OpenCodeKey, false)
+}
+
+// SanitizeOpenCodeGoKeys normalizes OpenCode Go key entries. Entries are not
+// removed when BaseURL is empty because the executor supplies the gateway default.
+func (cfg *Config) SanitizeOpenCodeGoKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenCodeGoKey = normalizeCodexKeyEntries(cfg.OpenCodeGoKey, false)
 }
 
 // NormalizeCloakConfig trims strings and removes blank sensitive words.

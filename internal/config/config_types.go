@@ -863,6 +863,17 @@ type ClaudeModel struct {
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
 
+	// CatalogProviderID, CatalogModelID, CatalogRouteProviderID, and
+	// CatalogRouteModelID declare the explicit models.dev identity this route
+	// participates in the model inventory with.
+	CatalogProviderID      string `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
+	CatalogModelID         string `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
+	CatalogRouteProviderID string `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
+	CatalogRouteModelID    string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
+
+	// Protocols declares the exact wire protocols implemented by this route.
+	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 
@@ -889,6 +900,26 @@ func (m ClaudeModel) GetDisplayName() string   { return m.DisplayName }
 func (m ClaudeModel) GetMaxContextLength() int { return m.MaxContextLength }
 func (m ClaudeModel) GetForceMapping() bool    { return m.ForceMapping }
 func (m ClaudeModel) GetIsCompat() bool        { return m.IsCompat }
+
+func (m ClaudeModel) GetCatalogProviderID() string {
+	return m.CatalogProviderID
+}
+
+func (m ClaudeModel) GetCatalogModelID() string {
+	return m.CatalogModelID
+}
+
+func (m ClaudeModel) GetCatalogRouteProviderID() string {
+	return m.CatalogRouteProviderID
+}
+
+func (m ClaudeModel) GetCatalogRouteModelID() string {
+	return m.CatalogRouteModelID
+}
+
+func (m ClaudeModel) GetProtocols() []string {
+	return m.Protocols
+}
 
 func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
@@ -1005,6 +1036,12 @@ func (m CodexModel) GetThinking() *registry.ThinkingSupport { return m.Thinking 
 
 // XAIKey uses the Codex API key structure for native xAI execution.
 type XAIKey = CodexKey
+
+// OpenCodeKey uses the Codex API key structure for native OpenCode (Zen/Go) execution.
+type OpenCodeKey = CodexKey
+
+// OpenCodeGoKey uses the Codex API key structure for native OpenCode Go execution.
+type OpenCodeGoKey = CodexKey
 
 // XAIModel uses the Codex model mapping structure for xAI models.
 type XAIModel = CodexModel
@@ -1127,6 +1164,10 @@ type OpenAICompatibility struct {
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
 	BaseURL string `yaml:"base-url" json:"base-url"`
 
+	// RouteChannel is the exact runtime routing channel registered for this
+	// provider. It is configuration data, not a value inferred from Name.
+	RouteChannel string `yaml:"route-channel" json:"route-channel"`
+
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
 
@@ -1163,6 +1204,9 @@ type OpenAICompatibilityAPIKey struct {
 	// APIKey is the authentication key for accessing the external API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// QuotaDomain identifies the quota pool for this exact credential.
+	QuotaDomain string `yaml:"quota-domain" json:"quota-domain"`
+
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
@@ -1184,6 +1228,23 @@ type OpenAICompatibilityModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// CatalogProviderID and CatalogModelID form the required models.dev ModelKey.
+	// Every enabled OpenAI-compatible route participates in the model inventory.
+	CatalogProviderID string `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
+	CatalogModelID    string `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
+
+	// CatalogRouteProviderID and CatalogRouteModelID identify the exact
+	// models.dev provider/model pair backing this runtime route.
+	CatalogRouteProviderID string `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
+	CatalogRouteModelID    string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
+
+	// Protocols declares the exact wire protocols implemented by this route.
+	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+
+	// VariantID marks an explicitly proven model-owned variant. An empty value
+	// means the configured route serves the canonical model directly.
+	VariantID string `yaml:"variant-id,omitempty" json:"variant-id,omitempty"`
 
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
@@ -1220,6 +1281,22 @@ type OpenAICompatibilityModel struct {
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }
 
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
+
+func (m OpenAICompatibilityModel) GetCatalogProviderID() string {
+	return m.CatalogProviderID
+}
+
+func (m OpenAICompatibilityModel) GetCatalogModelID() string {
+	return m.CatalogModelID
+}
+
+func (m OpenAICompatibilityModel) GetCatalogRouteProviderID() string {
+	return m.CatalogRouteProviderID
+}
+
+func (m OpenAICompatibilityModel) GetCatalogRouteModelID() string {
+	return m.CatalogRouteModelID
+}
 
 func (m OpenAICompatibilityModel) GetDisplayName() string          { return m.DisplayName }
 func (m OpenAICompatibilityModel) GetMaxContextLength() int        { return m.MaxContextLength }
