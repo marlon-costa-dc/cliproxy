@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -185,16 +186,23 @@ func (s *Service) Run(ctx context.Context) error {
 		s.hooks.OnBeforeStart(s.currentConfig())
 	}
 
+	listenerReady := make(chan struct{})
 	s.serverErr = make(chan error, 1)
 	go func() {
-		if errStart := s.server.Start(); errStart != nil {
+		if errStart := s.server.StartWithListenerReady(func() { close(listenerReady) }); errStart != nil {
 			s.serverErr <- errStart
 		} else {
 			s.serverErr <- nil
 		}
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-listenerReady:
+	case err := <-s.serverErr:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	if currentCfg := s.currentConfig(); currentCfg != nil {
 		fmt.Printf("API server started successfully on: %s:%d\n", currentCfg.Host, currentCfg.Port)
 	}
@@ -245,6 +253,10 @@ func (s *Service) Run(ctx context.Context) error {
 	s.registerModelRefreshCallback()
 	if !homeEnabled {
 		go s.runAntigravityModelRefresh(ctx)
+	}
+
+	if err := notifyServiceReady(os.Getenv("NOTIFY_SOCKET")); err != nil {
+		return fmt.Errorf("notify supervisor of CLIProxy readiness: %w", err)
 	}
 
 	select {
@@ -448,4 +460,20 @@ func (s *Service) startModelCatalogUpdaters(ctx context.Context) {
 		proxyURL = cfg.ProxyURL
 	}
 	executor.StartXAIVersionUpdater(ctx, proxyURL)
+}
+
+func notifyServiceReady(socket string) error {
+	if socket == "" {
+		return nil
+	}
+	connection, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: socket, Net: "unixgram"})
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	if err := connection.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		return err
+	}
+	_, err = connection.Write([]byte("READY=1"))
+	return err
 }
