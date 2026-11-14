@@ -124,6 +124,16 @@ func wrapRouteExhaustion(cause error, tracker *routeAttemptTracker) error {
 	if cause == nil {
 		return nil
 	}
+	summaryDebug := ""
+	if tracker != nil {
+		summaryDebug = tracker.Summary()
+	}
+	fmt.Printf("DEBUGWRAP trackerNil=%v attempts=%d summary=%q cause=%T %v\n", tracker == nil, func() int {
+		if tracker == nil {
+			return -1
+		}
+		return len(tracker.attempts)
+	}(), summaryDebug, cause, cause)
 	if tracker == nil {
 		return cause
 	}

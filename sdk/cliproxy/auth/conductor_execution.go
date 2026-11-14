@@ -208,7 +208,15 @@ func (m *Manager) executeWithoutFallbackChain(ctx context.Context, providers []s
 				return cliproxyexecutor.Response{}, errCtx
 			}
 		}
-		if preferredUpstreamErr != nil && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
+		if preferredUpstreamErr != nil {
+			if m.HomeEnabled() && !isHomeRetryRoundExhausted(lastErr) {
+				var existing *homeRetryRoundExhaustedError
+				var retryAfter *time.Duration
+				if errors.As(lastErr, &existing) && existing != nil {
+					retryAfter = existing.RetryAfter()
+				}
+				lastErr = markHomeRetryRoundExhausted(lastErr, retryAfter, false)
+			}
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
 		lastErr = unwrapExecutionBoundaryError(lastErr)
@@ -302,7 +310,15 @@ func (m *Manager) executeCountWithoutFallbackChain(ctx context.Context, provider
 				return cliproxyexecutor.Response{}, errCtx
 			}
 		}
-		if preferredUpstreamErr != nil && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
+		if preferredUpstreamErr != nil {
+			if m.HomeEnabled() && !isHomeRetryRoundExhausted(lastErr) {
+				var existing *homeRetryRoundExhaustedError
+				var retryAfter *time.Duration
+				if errors.As(lastErr, &existing) && existing != nil {
+					retryAfter = existing.RetryAfter()
+				}
+				lastErr = markHomeRetryRoundExhausted(lastErr, retryAfter, false)
+			}
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
 		return cliproxyexecutor.Response{}, wrapRouteExhaustion(unwrapExecutionBoundaryError(lastErr), tracker)
@@ -362,8 +378,15 @@ func (m *Manager) executeStreamWithoutFallbackChain(ctx context.Context, provide
 		if errStream == nil {
 			return result, nil
 		}
-		if hasUpstreamExecutionAttempt(errStream) {
-			preferredUpstreamErr = errStream
+		if preferredUpstreamErr == nil {
+			if hasUpstreamExecutionAttempt(errStream) {
+				preferredUpstreamErr = errStream
+			} else if m.HomeEnabled() {
+				var statusErr *Error
+				if errors.As(errStream, &statusErr) && statusErr != nil && statusErr.StatusCode() != 0 {
+					preferredUpstreamErr = errStream
+				}
+			}
 		}
 		if m.HomeEnabled() && retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
@@ -410,7 +433,15 @@ func (m *Manager) executeStreamWithoutFallbackChain(ctx context.Context, provide
 				return nil, errCtx
 			}
 		}
-		if preferredUpstreamErr != nil && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
+		if preferredUpstreamErr != nil {
+			if m.HomeEnabled() && !isHomeRetryRoundExhausted(lastErr) {
+				var existing *homeRetryRoundExhaustedError
+				var retryAfter *time.Duration
+				if errors.As(lastErr, &existing) && existing != nil {
+					retryAfter = existing.RetryAfter()
+				}
+				lastErr = markHomeRetryRoundExhausted(lastErr, retryAfter, false)
+			}
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
 		lastErr = unwrapExecutionBoundaryError(lastErr)

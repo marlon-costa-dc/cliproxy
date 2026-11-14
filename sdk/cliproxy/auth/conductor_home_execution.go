@@ -13,6 +13,26 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
+// homeErrorRetryAfter extracts the authoritative retry-after from a Home error.
+func homeErrorRetryAfter(err error) *time.Duration {
+	var exhausted *homeRetryRoundExhaustedError
+	if errors.As(err, &exhausted) && exhausted != nil {
+		if retryAfter := exhausted.RetryAfter(); retryAfter != nil {
+			return retryAfter
+		}
+	}
+	var cooldown *homeDispatchRetryAfterError
+	if errors.As(err, &cooldown) && cooldown != nil {
+		return cooldown.RetryAfter()
+	}
+	var busy *HomeConcurrencyBusyError
+	if errors.As(err, &busy) && busy != nil && busy.retryAfter > 0 {
+		retryAfter := busy.retryAfter
+		return &retryAfter
+	}
+	return nil
+}
+
 func (m *Manager) executeHome(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool, optionalTracker ...*routeAttemptTracker) (cliproxyexecutor.Response, error) {
 	var tracker *routeAttemptTracker
 	if len(optionalTracker) > 0 {
@@ -39,16 +59,20 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 				preferredUpstreamErr = errExecute
 			}
 		}
-		if hasUpstreamExecutionAttempt(errExecute) {
+		if preferredUpstreamErr == nil && hasUpstreamExecutionAttempt(errExecute) {
 			preferredUpstreamErr = errExecute
 		}
 		if retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errExecute, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
 				if retryRoundWaited {
 					if preferredUpstreamErr != nil {
-						errExecute = preferredExecutionAttemptError(markHomeRetryRoundExhausted(errExecute, nil, false), preferredUpstreamErr)
+						retryAfter := homeErrorRetryAfter(errExecute)
+						if retryAfter == nil {
+							retryAfter = &wait
+						}
+						errExecute = preferredExecutionAttemptError(markHomeRetryRoundExhausted(errExecute, retryAfter, false), preferredUpstreamErr)
 					}
-					return cliproxyexecutor.Response{}, errExecute
+					return cliproxyexecutor.Response{}, wrapRouteExhaustion(errExecute, tracker)
 				}
 				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 					return cliproxyexecutor.Response{}, errWait
@@ -67,10 +91,14 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 			if preferredUpstreamErr != nil {
 				// Keep the current Home retry-round marker (it owns authoritative
 				// timing) while the earlier upstream failure remains the cause.
-				marked := markHomeRetryRoundExhausted(errExecute, &wait, false)
-				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(marked, preferredUpstreamErr)
+				retryAfter := homeErrorRetryAfter(errExecute)
+				if retryAfter == nil {
+					retryAfter = &wait
+				}
+				marked := markHomeRetryRoundExhausted(errExecute, retryAfter, false)
+				return cliproxyexecutor.Response{}, wrapRouteExhaustion(preferredExecutionAttemptError(marked, preferredUpstreamErr), tracker)
 			}
-			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExecute)
+			return cliproxyexecutor.Response{}, wrapRouteExhaustion(unwrapExecutionBoundaryError(errExecute), tracker)
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
