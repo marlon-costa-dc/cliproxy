@@ -210,12 +210,7 @@ func (m *Manager) executeWithoutFallbackChain(ctx context.Context, providers []s
 		}
 		if preferredUpstreamErr != nil {
 			if m.HomeEnabled() && !isHomeRetryRoundExhausted(lastErr) {
-				var existing *homeRetryRoundExhaustedError
-				var retryAfter *time.Duration
-				if errors.As(lastErr, &existing) && existing != nil {
-					retryAfter = existing.RetryAfter()
-				}
-				lastErr = markHomeRetryRoundExhausted(lastErr, retryAfter, false)
+				lastErr = markHomeRetryRoundExhausted(lastErr, homeErrorRetryAfter(lastErr), false)
 			}
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
@@ -312,12 +307,7 @@ func (m *Manager) executeCountWithoutFallbackChain(ctx context.Context, provider
 		}
 		if preferredUpstreamErr != nil {
 			if m.HomeEnabled() && !isHomeRetryRoundExhausted(lastErr) {
-				var existing *homeRetryRoundExhaustedError
-				var retryAfter *time.Duration
-				if errors.As(lastErr, &existing) && existing != nil {
-					retryAfter = existing.RetryAfter()
-				}
-				lastErr = markHomeRetryRoundExhausted(lastErr, retryAfter, false)
+				lastErr = markHomeRetryRoundExhausted(lastErr, homeErrorRetryAfter(lastErr), false)
 			}
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
@@ -435,12 +425,7 @@ func (m *Manager) executeStreamWithoutFallbackChain(ctx context.Context, provide
 		}
 		if preferredUpstreamErr != nil {
 			if m.HomeEnabled() && !isHomeRetryRoundExhausted(lastErr) {
-				var existing *homeRetryRoundExhaustedError
-				var retryAfter *time.Duration
-				if errors.As(lastErr, &existing) && existing != nil {
-					retryAfter = existing.RetryAfter()
-				}
-				lastErr = markHomeRetryRoundExhausted(lastErr, retryAfter, false)
+				lastErr = markHomeRetryRoundExhausted(lastErr, homeErrorRetryAfter(lastErr), false)
 			}
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
