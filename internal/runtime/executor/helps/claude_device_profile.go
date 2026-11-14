@@ -289,7 +289,12 @@ func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) b
 // claudeDeviceProfileCandidateAcceptable preserves a measured client's own patch
 // line (same major/minor), while requiring the configured baseline exactly for
 // any other release line.
-func claudeDeviceProfileCandidateAcceptable(candidate, baseline ClaudeDeviceProfile) bool {
+func claudeDeviceProfileCandidateAcceptable(candidate, baseline ClaudeDeviceProfile, cfg *config.Config) bool {
+	if cfg != nil && strings.TrimSpace(cfg.ClaudeHeaderDefaults.UserAgent) != "" {
+		// An explicitly configured baseline is pinned; only the client's own
+		// patch line may be carried when the baseline is the built-in default.
+		return meetsClaudeDeviceProfileBaseline(candidate, baseline)
+	}
 	if meetsClaudeDeviceProfileBaseline(candidate, baseline) {
 		return true
 	}
@@ -461,7 +466,7 @@ func resolveClaudeDeviceProfileLocal(auth *cliproxyauth.Auth, apiKey string, hea
 	if hasCandidate {
 		candidate = pinClaudeDeviceProfilePlatform(candidate, baseline)
 	}
-	if hasCandidate && !claudeDeviceProfileCandidateAcceptable(candidate, baseline) {
+	if hasCandidate && !claudeDeviceProfileCandidateAcceptable(candidate, baseline, cfg) {
 		hasCandidate = false
 	}
 	cacheProfile := ClaudeDeviceProfile{}
@@ -523,7 +528,7 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	if hasCandidate {
 		candidate = pinClaudeDeviceProfilePlatform(candidate, baseline)
 	}
-	if hasCandidate && !claudeDeviceProfileCandidateAcceptable(candidate, baseline) {
+	if hasCandidate && !claudeDeviceProfileCandidateAcceptable(candidate, baseline, cfg) {
 		hasCandidate = false
 	}
 

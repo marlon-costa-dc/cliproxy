@@ -83,6 +83,7 @@ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVe
 }
 
 func TestApplyClaudeHeaders_FastModeBetaIsConditional(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	baseline := claudeCodeCLIBetas([]byte(`{"model":"claude-opus-5"}`), nil, false)
 	betasWithoutFastMode := baseline
 	betasWithFastMode := baseline + "," + claudeFastModeBeta
@@ -176,6 +177,7 @@ func assertClaudeCountTokensIdentity(t *testing.T, body []byte, headers http.Hea
 }
 
 func TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 	stabilize := true
 
@@ -219,6 +221,7 @@ func TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint(t *testing.T) {
 }
 
 func TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 	stabilize := true
 
@@ -282,6 +285,7 @@ func TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints(t *testing.T)
 }
 
 func TestApplyClaudeHeaders_DoesNotDowngradeConfiguredBaselineOnFirstClaudeClient(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 	stabilize := true
 
@@ -324,6 +328,7 @@ func TestApplyClaudeHeaders_DoesNotDowngradeConfiguredBaselineOnFirstClaudeClien
 }
 
 func TestApplyClaudeHeaders_UpgradesCachedSoftwareFingerprintWhenBaselineAdvances(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 	stabilize := true
 
@@ -377,6 +382,7 @@ func TestApplyClaudeHeaders_UpgradesCachedSoftwareFingerprintWhenBaselineAdvance
 }
 
 func TestApplyClaudeHeaders_LearnsOfficialFingerprintAfterCustomBaselineFallback(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 	stabilize := true
 
@@ -536,6 +542,7 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 }
 
 func TestApplyClaudeHeaders_ThirdPartyBaselineThenOfficialUpgradeKeepsPinnedPlatform(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 	stabilize := true
 
@@ -579,6 +586,7 @@ func TestApplyClaudeHeaders_ThirdPartyBaselineThenOfficialUpgradeKeepsPinnedPlat
 }
 
 func TestApplyClaudeHeaders_DisableDeviceProfileStabilization(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 
 	stabilize := false
@@ -632,6 +640,7 @@ func TestApplyClaudeHeaders_DisableDeviceProfileStabilization(t *testing.T) {
 }
 
 func TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForClaudeClients(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 
 	stabilize := false
@@ -664,6 +673,7 @@ func TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForCla
 }
 
 func TestApplyClaudeHeaders_LegacyThirdPartyUsesStableConfiguredOSArch(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 
 	stabilize := false
@@ -694,6 +704,7 @@ func TestApplyClaudeHeaders_LegacyThirdPartyUsesStableConfiguredOSArch(t *testin
 }
 
 func TestApplyClaudeHeaders_UnsetStabilizationUsesStableConfiguredOSArch(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	resetClaudeDeviceProfileCache()
 
 	cfg := &config.Config{
@@ -722,6 +733,7 @@ func TestApplyClaudeHeaders_UnsetStabilizationUsesStableConfiguredOSArch(t *test
 }
 
 func TestApplyClaudeHeaders_UsesOAuthAuthorizationAndBrowserFingerprint(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-header-test"}}
 	req := newClaudeHeaderTestRequest(t, nil)
 	if errHeaders := applyClaudeHeaders(req, auth, "sk-ant-oat-header-test", false, nil, nil, &config.Config{}, nil, false, "11111111-2222-4333-8444-555555555555"); errHeaders != nil {
@@ -742,6 +754,7 @@ func TestApplyClaudeHeaders_UsesOAuthAuthorizationAndBrowserFingerprint(t *testi
 }
 
 func TestApplyClaudeHeaders_EmptyAPIKey_OmitsAuthHeaders(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	auth := &cliproxyauth.Auth{
 		Provider: "claude",
 		Attributes: map[string]string{
@@ -9368,6 +9381,7 @@ func TestWithClaudeAdvisorToolBeta_InsertsBeforeTrailingBetas(t *testing.T) {
 }
 
 func TestApplyClaudeHeaders_StreamTransportNegotiation(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-stream-accept"}}
 	body := []byte(`{"model":"claude-opus-4-6","stream":true}`)
 
@@ -9396,6 +9410,7 @@ func TestApplyClaudeHeaders_StreamTransportNegotiation(t *testing.T) {
 }
 
 func TestApplyClaudeHeaders_DefaultPreservesCallerBetas(t *testing.T) {
+	helps.ResetClaudeDeviceProfileCache()
 	incoming := http.Header{"Anthropic-Beta": []string{"caller-only-beta"}}
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-caller-betas"}}
 	body := []byte(`{"model":"claude-opus-4-6"}`)
