@@ -232,7 +232,7 @@ func DerivedID(metadata map[string]any) string {
 func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
 	payload := opts.OriginalRequest
 	if len(payload) == 0 && len(req.Payload) > 0 {
-		opts.OriginalRequest = req.Payload
+		opts.OriginalRequest = append([]byte(nil), req.Payload...)
 		payload = opts.OriginalRequest
 	}
 	executionID := firstNormalizedMetadataID(cliproxyexecutor.ExecutionSessionMetadataKey, opts.Metadata, req.Metadata)

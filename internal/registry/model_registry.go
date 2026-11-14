@@ -1649,15 +1649,58 @@ func (r *ModelRegistry) RegisteredRouteSnapshots() []RegisteredRouteSnapshot {
 }
 
 // GetAvailableModelInfos returns cloned metadata for all currently available models.
+// selectableModelClientsLocked counts credentials that can currently select the
+// model, honoring per-client quota cooldowns and suspensions.
+func (r *ModelRegistry) selectableModelClientsLocked(modelID, provider string, registration *ModelRegistration, now time.Time) (int, time.Time) {
+	if registration == nil {
+		return 0, time.Time{}
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	selectable := 0
+	var recoveryAt time.Time
+	for clientID, modelIDs := range r.clientModels {
+		if provider != "" && strings.ToLower(strings.TrimSpace(r.clientProviders[clientID])) != provider {
+			continue
+		}
+		supportsModel := false
+		for _, registeredModelID := range modelIDs {
+			if strings.EqualFold(strings.TrimSpace(registeredModelID), modelID) {
+				supportsModel = true
+				break
+			}
+		}
+		if !supportsModel {
+			continue
+		}
+		blocked := false
+		if quotaTime := registration.QuotaExceededClients[clientID]; quotaTime != nil {
+			clientRecoveryAt := quotaTime.Add(modelQuotaExceededWindow)
+			if now.Before(clientRecoveryAt) {
+				blocked = true
+				if recoveryAt.IsZero() || clientRecoveryAt.Before(recoveryAt) {
+					recoveryAt = clientRecoveryAt
+				}
+			}
+		}
+		if _, suspended := registration.SuspendedClients[clientID]; suspended {
+			blocked = true
+		}
+		if !blocked {
+			selectable++
+		}
+	}
+	return selectable, recoveryAt
+}
+
 func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 	now := time.Now()
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
 	result := make([]*ModelInfo, 0, len(r.models))
-	for _, registration := range r.models {
-		available, _ := modelRegistrationAvailability(registration, now)
-		if !available || registration == nil || registration.Info == nil {
+	for modelID, registration := range r.models {
+		selectable, _ := r.selectableModelClientsLocked(modelID, "", registration, now)
+		if selectable == 0 || registration == nil || registration.Info == nil {
 			continue
 		}
 		result = append(result, cloneModelInfo(registration.Info))
@@ -1672,12 +1715,12 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 	models := make([]map[string]any, 0, len(r.models))
 	var expiresAt time.Time
 
-	for _, registration := range r.models {
-		available, registrationExpiresAt := modelRegistrationAvailability(registration, now)
+	for modelID, registration := range r.models {
+		selectable, registrationExpiresAt := r.selectableModelClientsLocked(modelID, "", registration, now)
 		if !registrationExpiresAt.IsZero() && (expiresAt.IsZero() || registrationExpiresAt.Before(expiresAt)) {
 			expiresAt = registrationExpiresAt
 		}
-		if !available || registration == nil {
+		if selectable == 0 || registration == nil {
 			continue
 		}
 
@@ -1935,6 +1978,11 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 	}
 
 	sort.Slice(providers, func(i, j int) bool {
+		iConfigured := registration.InfoByProvider[providers[i].name] != nil && registration.InfoByProvider[providers[i].name].UserDefined
+		jConfigured := registration.InfoByProvider[providers[j].name] != nil && registration.InfoByProvider[providers[j].name].UserDefined
+		if iConfigured != jConfigured {
+			return iConfigured
+		}
 		if providers[i].count == providers[j].count {
 			return providers[i].name < providers[j].name
 		}

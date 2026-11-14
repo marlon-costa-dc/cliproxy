@@ -94,9 +94,8 @@ func (cfg *Config) validateOpenAICompatibilityInventoryFacts() error {
 		if len(provider.Models) == 0 {
 			return fmt.Errorf("%s.models: must contain at least one model", providerPath)
 		}
-		if len(provider.APIKeyEntries) == 0 {
-			return fmt.Errorf("%s.api-key-entries: must contain at least one explicit credential", providerPath)
-		}
+		// A keyless group is valid: the provider may receive credentials through
+		// auth files or the keyless management projection.
 		for credentialIndex := range provider.APIKeyEntries {
 			credentialPath := fmt.Sprintf("%s.api-key-entries[%d]", providerPath, credentialIndex)
 			credential := &provider.APIKeyEntries[credentialIndex]
