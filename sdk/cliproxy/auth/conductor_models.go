@@ -240,6 +240,7 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 	isSuspended := auth.Disabled || auth.Status == StatusDisabled
 	isQuotaExceeded := false
 	var suspendReason string
+	var suspendUntil time.Time
 	if state != nil {
 		if state.Quota.Exceeded && state.Quota.Reason != "cloudflare challenge" && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
 			isQuotaExceeded = true
@@ -257,6 +258,9 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 		// With per-model states, an unrelated model keeps its own projection.
 		isSuspended = true
 	}
+	if isSuspended && state != nil && !state.Quota.Exceeded && state.Unavailable && state.NextRetryAfter.After(now) {
+		suspendUntil = state.NextRetryAfter
+	}
 	if isSuspended {
 		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
 		if suspendReason == "" && state != nil {
@@ -271,6 +275,7 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 		ModelID:       targetModel,
 		Suspended:     isSuspended,
 		SuspendReason: suspendReason,
+		SuspendUntil:  suspendUntil,
 		QuotaExceeded: isQuotaExceeded,
 	}
 }
