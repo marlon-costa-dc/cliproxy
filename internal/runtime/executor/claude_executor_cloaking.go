@@ -3982,30 +3982,6 @@ func countCacheControlsResult(system, tools, messages ojson.Result) int {
 	return count
 }
 
-// stripCacheControls removes Anthropic-only prompt-caching fields before a
-// delegated Claude-format request is sent to a provider that does not support
-// them, such as Kimi.
-func stripCacheControls(payload []byte) []byte {
-	doc := ojson.NewDoc(payload)
-	stripCacheControlsDoc(doc)
-	return doc.Bytes()
-}
-
-func stripCacheControlsDoc(doc *ojson.Doc) {
-	for i := range doc.Get("tools").Array() {
-		_ = doc.Delete(fmt.Sprintf("tools.%d.cache_control", i))
-	}
-	for i := range doc.Get("system").Array() {
-		_ = doc.Delete(fmt.Sprintf("system.%d.cache_control", i))
-	}
-	for messageIndex, message := range doc.Get("messages").Array() {
-		_ = doc.Delete(fmt.Sprintf("messages.%d.cache_control", messageIndex))
-		for contentIndex := range message.Get("content").Array() {
-			_ = doc.Delete(fmt.Sprintf("messages.%d.content.%d.cache_control", messageIndex, contentIndex))
-		}
-	}
-}
-
 // normalizeCacheControlTTL ensures cache_control TTL values don't violate the
 // prompt-caching-scope-2026-01-05 ordering constraint: a 1h-TTL block must not
 // appear after a 5m-TTL block anywhere in the evaluation order.

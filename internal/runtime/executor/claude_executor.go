@@ -32,12 +32,14 @@ type ClaudeExecutor struct {
 	cfg                     *config.Config
 	requestLogProvider      string
 	upstreamModelNormalizer func(string) string
-	cacheControlDisabled    bool
 	oauthProfileFetcher     claudeOAuthProfileFetcher
 	// oauthToolAliases is shared by every ForAPIKey copy of this executor;
 	// constructors allocate it so copies made per request reuse one store.
 	oauthToolAliases *claudeOAuthToolAliasStore
 	threadBetas      *helps.ClaudeThreadBetaStore
+	// cacheControlDisabled is a plus-provider option (Kimi) that suppresses
+	// prompt cache_control injection for the delegated Claude request.
+	cacheControlDisabled bool
 }
 
 type claudeOAuthCancellationError struct {
@@ -648,13 +650,8 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 	apiKey, _ := claudeCreds(auth)
 	useAPIKey := auth != nil && (auth.AuthKind() == cliproxyauth.AuthKindAPIKey || (auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""))
 	isAnthropicBase := isAnthropicUpstreamURL(req.URL)
-	authScheme := ""
-	if auth != nil && auth.Attributes != nil {
-		authScheme = strings.TrimSpace(auth.Attributes["anthropic_auth_scheme"])
-	}
-	useXAPIKey := strings.EqualFold(authScheme, "x-api-key") || (isAnthropicBase && useAPIKey)
 	if strings.TrimSpace(apiKey) != "" {
-		if useXAPIKey {
+		if isAnthropicBase && useAPIKey {
 			req.Header.Del("Authorization")
 			req.Header.Set("x-api-key", apiKey)
 		} else {

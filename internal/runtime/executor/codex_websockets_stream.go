@@ -821,10 +821,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				emittedPayload = true
 				if isTerminalEvent {
-					if (eventType == "error" || eventType == "response.failed") && sess != nil {
-						e.invalidateUpstreamConn(sess, conn, "terminal_error", nil)
-						unlockStreamSession()
-					}
 					return
 				}
 				continue

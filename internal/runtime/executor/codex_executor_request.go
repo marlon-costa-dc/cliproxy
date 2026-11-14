@@ -26,8 +26,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -984,46 +982,4 @@ func codexImageGenerationToolModel(body []byte) string {
 		}
 	}
 	return codexDefaultImageToolModel
-}
-
-// normalizeCodexPreviousResponseIDForPromptCache keeps incremental Responses
-// requests chained to the previous response, but drops the chain when the
-// client already sent a full transcript or compaction summary: replaying a
-// previous response there would duplicate context.
-func normalizeCodexPreviousResponseIDForPromptCache(from sdktranslator.Format, rawJSON []byte) []byte {
-	if !sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
-		return rawJSON
-	}
-	if strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()) == "" {
-		return rawJSON
-	}
-	if strings.TrimSpace(gjson.GetBytes(rawJSON, "prompt_cache_key").String()) == "" {
-		return rawJSON
-	}
-	input := gjson.GetBytes(rawJSON, "input")
-	if !codexInputLooksLikeFullTranscript(input) {
-		return rawJSON
-	}
-	updated, errDelete := sjson.DeleteBytes(rawJSON, "previous_response_id")
-	if errDelete != nil {
-		return rawJSON
-	}
-	return updated
-}
-
-func codexInputLooksLikeFullTranscript(input gjson.Result) bool {
-	if !input.Exists() || !input.IsArray() {
-		return false
-	}
-	for _, item := range input.Array() {
-		// Some Responses transcript items omit type; assistant role is evidence.
-		if strings.TrimSpace(item.Get("role").String()) == "assistant" {
-			return true
-		}
-		switch strings.TrimSpace(item.Get("type").String()) {
-		case "compaction", "compaction_summary":
-			return true
-		}
-	}
-	return false
 }
