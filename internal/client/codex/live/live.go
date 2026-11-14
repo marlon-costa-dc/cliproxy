@@ -338,34 +338,6 @@ func (h *Handler) Handle(c *gin.Context) {
 	}
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
 		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", model)
-		helps.RecordAPIResponseMetadata(ctx, runtimeConfig, resp.StatusCode, callResponseHeaders(resp.Header))
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("codex live: close unauthorized response body error: %v", errClose)
-		}
-		refreshed, didRefresh, errRefresh := h.authManager.RefreshHomeSelectionAfterUnauthorized(ctx, selection, selected)
-		if errRefresh != nil {
-			selection.End("refresh_failed")
-			writeSelectionError(c, errRefresh)
-			return
-		}
-		if !didRefresh || refreshed == nil {
-			selection.End("refresh_unavailable")
-			writeLiveError(c, http.StatusUnauthorized, "Codex credential unauthorized")
-			return
-		}
-		selected = refreshed
-		logging.SetGinCPATraceID(c, selected.EnsureIndex())
-		resp, errRequest = performRequest(selected)
-		if errRequest != nil {
-			selection.End("retry_failed")
-			helps.RecordAPIResponseError(ctx, runtimeConfig, errRequest)
-			writeLiveError(c, clienterror.HTTPStatusFromErrorOr(errRequest, http.StatusBadGateway), errRequest.Error())
-			return
-		}
-		if resp.StatusCode == http.StatusUnauthorized {
-			h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", model)
-		}
 	}
 
 	var closeResponseOnce sync.Once
