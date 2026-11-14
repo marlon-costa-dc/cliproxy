@@ -478,7 +478,24 @@ func ensureResponseIntro(ginCtx *gin.Context, attempt *upstreamAttempt) {
 	if attempt == nil || attempt.response == nil || attempt.responseIntroWritten {
 		return
 	}
-	writeAttemptResponse(ginCtx, attempt, []byte(fmt.Sprintf("=== API RESPONSE %d ===\n", attempt.index)))
+	prefix := ""
+	if attempt.index > 1 {
+		if attempt.response != nil {
+			written := attempt.response.String()
+			switch {
+			case strings.HasSuffix(written, "\n\n"):
+				prefix = ""
+			case strings.HasSuffix(written, "\n"):
+				prefix = "\n"
+			default:
+				prefix = "\n\n"
+			}
+		} else if attempt.responseSource != nil {
+			// File-backed bodies end with the writeAttemptResponse newline.
+			prefix = "\n"
+		}
+	}
+	writeAttemptResponse(ginCtx, attempt, []byte(fmt.Sprintf("%s=== API RESPONSE %d ===\n", prefix, attempt.index)))
 	writeAttemptResponse(ginCtx, attempt, []byte(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano))))
 	writeAttemptResponse(ginCtx, attempt, []byte("\n"))
 	attempt.responseIntroWritten = true

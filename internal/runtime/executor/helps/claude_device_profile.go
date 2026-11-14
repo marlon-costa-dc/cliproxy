@@ -274,9 +274,29 @@ func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) b
 	if baseline.UserAgent == "" || !baseline.hasVersion {
 		return false
 	}
-	return candidate.version.Compare(baseline.version) == 0 &&
+	entrypoint, _ := parseClaudeCodeUserAgentDetails(candidate.UserAgent)
+	if entrypoint != "" && entrypoint != "cli" {
+		// A confirmed VSCode/Agent SDK client keeps its own measured release
+		// line; only the plain CLI must track the configured baseline version.
+		return candidate.PackageVersion == baseline.PackageVersion &&
+			candidate.RuntimeVersion == baseline.RuntimeVersion
+	}
+	return plausibleClaudeCLIVersion(candidate.version, baseline.version) &&
 		candidate.PackageVersion == baseline.PackageVersion &&
 		candidate.RuntimeVersion == baseline.RuntimeVersion
+}
+
+// claudeDeviceProfileCandidateAcceptable preserves a measured client's own patch
+// line (same major/minor), while requiring the configured baseline exactly for
+// any other release line.
+func claudeDeviceProfileCandidateAcceptable(candidate, baseline ClaudeDeviceProfile) bool {
+	if meetsClaudeDeviceProfileBaseline(candidate, baseline) {
+		return true
+	}
+	if candidate.UserAgent == "" || !candidate.hasVersion || baseline.UserAgent == "" || !baseline.hasVersion {
+		return false
+	}
+	return candidate.version.major == baseline.version.major && candidate.version.minor == baseline.version.minor
 }
 
 func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
@@ -441,7 +461,7 @@ func resolveClaudeDeviceProfileLocal(auth *cliproxyauth.Auth, apiKey string, hea
 	if hasCandidate {
 		candidate = pinClaudeDeviceProfilePlatform(candidate, baseline)
 	}
-	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
+	if hasCandidate && !claudeDeviceProfileCandidateAcceptable(candidate, baseline) {
 		hasCandidate = false
 	}
 	cacheProfile := ClaudeDeviceProfile{}
@@ -503,7 +523,7 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	if hasCandidate {
 		candidate = pinClaudeDeviceProfilePlatform(candidate, baseline)
 	}
-	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
+	if hasCandidate && !claudeDeviceProfileCandidateAcceptable(candidate, baseline) {
 		hasCandidate = false
 	}
 

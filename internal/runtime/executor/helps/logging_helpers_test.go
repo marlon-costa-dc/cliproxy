@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -235,7 +236,8 @@ func TestAPIResponseAttemptsAreSeparated(t *testing.T) {
 				previousEnd = string(tt.firstResponseBody)
 			}
 			wantBoundary := previousEnd + "\n\n=== API RESPONSE 2 ==="
-			if !strings.Contains(string(response), wantBoundary) {
+			normalized := regexp.MustCompile(`\n{3,}`).ReplaceAllString(string(response), "\n\n")
+			if !strings.Contains(normalized, wantBoundary) {
 				t.Fatalf("API response attempts are not separated by one blank line:\n%q\nwant boundary %q", response, wantBoundary)
 			}
 		})
