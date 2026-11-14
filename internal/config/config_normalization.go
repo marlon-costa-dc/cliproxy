@@ -139,34 +139,13 @@ func normalizeClaudeBetaNames(names []string) []string {
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
 // allows multiple aliases per upstream name, and ensures aliases are unique within each channel.
 func (cfg *Config) SanitizeOAuthModelAlias() {
-	if cfg == nil {
+	if cfg == nil || len(cfg.OAuthModelAlias) == 0 {
 		return
-	}
-	if cfg.OAuthModelAlias == nil {
-		cfg.OAuthModelAlias = make(map[string][]OAuthModelAlias)
-	}
-	hasChannel := func(channel string) bool {
-		for key := range cfg.OAuthModelAlias {
-			if strings.EqualFold(strings.TrimSpace(key), channel) {
-				return true
-			}
-		}
-		return false
-	}
-	if !hasChannel("kiro") {
-		cfg.OAuthModelAlias["kiro"] = defaultKiroAliases()
-	}
-	if !hasChannel("github-copilot") {
-		cfg.OAuthModelAlias["github-copilot"] = defaultGitHubCopilotAliases()
 	}
 	out := make(map[string][]OAuthModelAlias, len(cfg.OAuthModelAlias))
 	for rawChannel, aliases := range cfg.OAuthModelAlias {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
-		if channel == "" {
-			continue
-		}
-		if len(aliases) == 0 {
-			out[channel] = nil
+		if channel == "" || len(aliases) == 0 {
 			continue
 		}
 		seenAlias := make(map[string]struct{}, len(aliases))
@@ -419,6 +398,71 @@ func sanitizeMetaKeyEntries(entries []MetaKey) []MetaKey {
 	return out
 }
 
+func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
+	if len(entries) == 0 {
+		return entries
+	}
+	out := make([]CodexKey, 0, len(entries))
+	for i := range entries {
+		e := entries[i]
+		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.Headers = NormalizeHeaders(e.Headers)
+		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
+		if e.BaseURL == "" {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// NormalizeSensitiveWordsReplace trims replacement target keys, drops blank keys,
+// and preserves replacement values (including empty strings for phrase deletion).
+func NormalizeSensitiveWordsReplace(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make(map[string]string, len(in))
+	for _, rawKey := range keys {
+		trimmedKey := strings.TrimSpace(rawKey)
+		if trimmedKey == "" {
+			continue
+		}
+		if _, exists := out[trimmedKey]; exists && rawKey != trimmedKey {
+			continue
+		}
+		out[trimmedKey] = in[rawKey]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// SanitizeOpenCodeKeys normalizes OpenCode (Zen) key entries. Entries are not
+// removed when BaseURL is empty: the OpenCode executor applies its gateway
+// default, so an empty BaseURL is valid and must survive config load.
+func (cfg *Config) SanitizeOpenCodeKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenCodeKey = normalizeCodexKeyEntries(cfg.OpenCodeKey, false)
+}
+
+// SanitizeOpenCodeGoKeys normalizes OpenCode Go key entries.
+func (cfg *Config) SanitizeOpenCodeGoKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenCodeGoKey = normalizeCodexKeyEntries(cfg.OpenCodeGoKey, false)
+}
+
 func normalizeCodexKeyEntries(entries []CodexKey, dropEmptyBaseURL bool) []CodexKey {
 	if len(entries) == 0 {
 		return entries
@@ -438,27 +482,38 @@ func normalizeCodexKeyEntries(entries []CodexKey, dropEmptyBaseURL bool) []Codex
 	return out
 }
 
-func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
-	return normalizeCodexKeyEntries(entries, true)
+// canonicalRouteChannel derives the default routing identity from a provider name.
+func canonicalRouteChannel(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range name {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_':
+			builder.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }
 
-// SanitizeOpenCodeKeys normalizes OpenCode (Zen) key entries. Entries are not
-// removed when BaseURL is empty: the OpenCode executor applies its gateway
-// default, so an empty BaseURL is valid and must survive config load.
-func (cfg *Config) SanitizeOpenCodeKeys() {
+// SanitizeAntigravity normalizes Antigravity sensitive-word settings.
+func (cfg *Config) SanitizeAntigravity() {
 	if cfg == nil {
 		return
 	}
-	cfg.OpenCodeKey = normalizeCodexKeyEntries(cfg.OpenCodeKey, false)
+	cfg.Antigravity.SensitiveWordsReplace = NormalizeSensitiveWordsReplace(cfg.Antigravity.SensitiveWordsReplace)
 }
 
-// SanitizeOpenCodeGoKeys normalizes OpenCode Go key entries. Entries are not
-// removed when BaseURL is empty because the executor supplies the gateway default.
-func (cfg *Config) SanitizeOpenCodeGoKeys() {
+// SanitizeDevin normalizes Devin sensitive-word settings.
+func (cfg *Config) SanitizeDevin() {
 	if cfg == nil {
 		return
 	}
-	cfg.OpenCodeGoKey = normalizeCodexKeyEntries(cfg.OpenCodeGoKey, false)
+	cfg.Devin.SensitiveWordsReplace = NormalizeSensitiveWordsReplace(cfg.Devin.SensitiveWordsReplace)
 }
 
 // NormalizeCloakConfig trims strings and removes blank sensitive words.
@@ -482,6 +537,7 @@ func NormalizeCloakConfig(cloak *CloakConfig) *CloakConfig {
 	} else {
 		cloak.SensitiveWords = nil
 	}
+	cloak.SensitiveWordsReplace = NormalizeSensitiveWordsReplace(cloak.SensitiveWordsReplace)
 	return cloak
 }
 
@@ -596,25 +652,6 @@ func (cfg *Config) SanitizeGeminiKeys() {
 	cfg.GeminiKey = sanitizeGeminiKeyEntries(cfg.GeminiKey)
 }
 
-// SanitizeKiroKeys normalizes Kiro credential fields.
-func (cfg *Config) SanitizeKiroKeys() {
-	if cfg == nil {
-		return
-	}
-	for i := range cfg.KiroKey {
-		entry := &cfg.KiroKey[i]
-		entry.TokenFile = strings.TrimSpace(entry.TokenFile)
-		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
-		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
-		entry.ProfileArn = strings.TrimSpace(entry.ProfileArn)
-		entry.Region = strings.TrimSpace(entry.Region)
-		entry.StartURL = strings.TrimSpace(entry.StartURL)
-		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
-		entry.AgentTaskType = strings.TrimSpace(entry.AgentTaskType)
-		entry.PreferredEndpoint = strings.TrimSpace(entry.PreferredEndpoint)
-	}
-}
-
 // SanitizeInteractionsKeys deduplicates and normalizes native Interactions credentials.
 // It uses API key, base URL, proxy URL, prefix, and custom headers as the uniqueness key.
 func (cfg *Config) SanitizeInteractionsKeys() {
@@ -703,22 +740,4 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 		return nil
 	}
 	return out
-}
-
-// canonicalRouteChannel derives the default routing identity from a provider name.
-func canonicalRouteChannel(name string) string {
-	name = strings.ToLower(strings.TrimSpace(name))
-	var builder strings.Builder
-	lastDash := false
-	for _, r := range name {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_':
-			builder.WriteRune(r)
-			lastDash = false
-		case !lastDash:
-			builder.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(builder.String(), "-")
 }
