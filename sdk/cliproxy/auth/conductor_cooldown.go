@@ -2108,11 +2108,36 @@ func resultErrorFromError(err error) *Error {
 	var resultErr *Error
 	if errors.As(err, &sourceErr) && sourceErr != nil {
 		resultErr = cloneError(sourceErr)
+		if resultErr.Code == "auth_unavailable" {
+			for current := errors.Unwrap(err); current != nil; current = errors.Unwrap(current) {
+				if cause, ok := current.(*Error); ok && cause != nil && cause.Code != "" && cause.Code != "auth_unavailable" {
+					resultErr.Code = cause.Code
+					if cause.HTTPStatus != 0 {
+						resultErr.HTTPStatus = cause.HTTPStatus
+					}
+					break
+				}
+			}
+		}
 	} else {
 		resultErr = &Error{Message: err.Error()}
 	}
+	if resultErr.Code == "" {
+		type errorCodeProvider interface{ ErrorCode() string }
+		var codeErr errorCodeProvider
+		if errors.As(err, &codeErr) && codeErr != nil {
+			resultErr.Code = strings.TrimSpace(codeErr.ErrorCode())
+		}
+	}
 	if resultErr.HTTPStatus == 0 {
 		resultErr.HTTPStatus = statusCodeFromError(err)
+	}
+	if resultErr.Code == requestScopedErrorCode || resultErr.Code == transientRateLimitErrorCode {
+		type credentialScopedProvider interface{ IsCredentialScoped() bool }
+		var scoped credentialScopedProvider
+		if errors.As(err, &scoped) && scoped != nil && scoped.IsCredentialScoped() {
+			resultErr.Code = "credential_quota"
+		}
 	}
 	switch {
 	case isStreamTruncatedError(err):
@@ -2161,6 +2186,11 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	}
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
+	}
+	if statusCodeFromResult(err) == http.StatusNotImplemented {
+		// A plugin capability that is not implemented is a local request fault;
+		// it must not cool or mark the credential unavailable.
+		return true
 	}
 	if statusCodeFromResult(err) == http.StatusTooManyRequests && !err.IsRequestScoped() {
 		return false

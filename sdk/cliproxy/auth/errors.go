@@ -287,6 +287,23 @@ func (e *authUnavailableError) Unwrap() error {
 	return e.cause
 }
 
+// StatusCode forwards the upstream failure's HTTP status so callers see the
+// real cause (e.g. plugin 501) instead of the generic unavailability status.
+func (e *authUnavailableError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	type statusCoder interface{ StatusCode() int }
+	var sc statusCoder
+	if e.cause != nil && errors.As(e.cause, &sc) && sc != nil && sc.StatusCode() != 0 {
+		return sc.StatusCode()
+	}
+	if e.base != nil {
+		return e.base.HTTPStatus
+	}
+	return 0
+}
+
 func (e *authUnavailableError) As(target any) bool {
 	if e == nil {
 		return false
@@ -312,13 +329,6 @@ func (e *authUnavailableError) Is(target error) bool {
 		return e.base == otherErr
 	}
 	return false
-}
-
-func (e *authUnavailableError) StatusCode() int {
-	if e == nil || e.base == nil {
-		return 0
-	}
-	return e.base.HTTPStatus
 }
 
 func (e *authUnavailableError) IsRequestScoped() bool {
