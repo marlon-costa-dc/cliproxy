@@ -324,6 +324,8 @@ func normalizeClaudeDeviceProfile(profile, baseline ClaudeDeviceProfile) ClaudeD
 	return profile
 }
 
+var claudeCodeNativeUserAgentPattern = regexp.MustCompile(`(?i)^claude-cli/[0-9]+\.[0-9]+\.[0-9]+\s+\(external,\s*[^,)]+(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+)?\)$`)
+
 func extractClaudeDeviceProfile(headers http.Header, cfg *config.Config) (ClaudeDeviceProfile, bool) {
 	if headers == nil {
 		return ClaudeDeviceProfile{}, false
@@ -649,9 +651,20 @@ func RuntimeStainlessOS() string { return mapStainlessOS() }
 // RuntimeStainlessArch returns the Stainless SDK arch name for this host.
 func RuntimeStainlessArch() string { return mapStainlessArch() }
 
-func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfile) {
+func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfile, requestUserAgent ...string) {
 	if r == nil {
 		return
+	}
+	userAgent := profile.UserAgent
+	if len(requestUserAgent) > 0 {
+		stable, validStable := parseClaudeCodeUserAgent(profile.UserAgent)
+		current, validCurrent := parseClaudeCodeUserAgent(requestUserAgent[0])
+		if validStable && validCurrent {
+			userAgent = stable.profileUserAgent
+			if len(current.requestFields) > 0 {
+				userAgent = strings.TrimSuffix(userAgent, ")") + "," + strings.Join(current.requestFields, ",") + ")"
+			}
+		}
 	}
 	for _, headerName := range []string{
 		"User-Agent",
@@ -662,15 +675,13 @@ func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfil
 	} {
 		r.Header.Del(headerName)
 	}
-	r.Header.Set("User-Agent", profile.UserAgent)
+	r.Header.Set("User-Agent", userAgent)
 	r.Header.Set("X-Stainless-Package-Version", profile.PackageVersion)
 	r.Header.Set("X-Stainless-Runtime-Version", profile.RuntimeVersion)
 	r.Header.Set("X-Stainless-Os", profile.OS)
 	r.Header.Set("X-Stainless-Arch", profile.Arch)
 }
 
-// DefaultClaudeVersion returns the version string (e.g. "2.1.280") from the
-// current baseline device profile. It extracts the version from the User-Agent.
 func DefaultClaudeVersion(cfg *config.Config) string {
 	profile := defaultClaudeDeviceProfile(cfg)
 	if version, ok := parseClaudeCLIVersion(profile.UserAgent); ok {

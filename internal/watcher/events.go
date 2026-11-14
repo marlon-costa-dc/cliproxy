@@ -312,3 +312,39 @@ func (w *Watcher) shouldDebounceRemove(normalizedPath string, now time.Time) boo
 	w.clientsMutex.Unlock()
 	return false
 }
+
+func (w *Watcher) syncAuthDirWatch() {
+	if w == nil || w.watcher == nil || w.stopped.Load() {
+		return
+	}
+	w.watchMu.Lock()
+	defer w.watchMu.Unlock()
+	if !w.started || w.stopped.Load() {
+		return
+	}
+	target := strings.TrimSpace(w.currentAuthDir())
+	oldWatched := strings.TrimSpace(w.watchedAuthDir)
+	if oldWatched == target {
+		return
+	}
+	if oldWatched != "" && !w.sameNormalizedAuthPath(oldWatched, w.configPath) && !w.sameNormalizedAuthPath(oldWatched, target) {
+		if errRemove := w.watcher.Remove(oldWatched); errRemove != nil {
+			log.Debugf("failed to remove previous auth directory watch %s: %v", oldWatched, errRemove)
+		}
+		w.watchedAuthDir = ""
+	}
+	if target == "" {
+		w.watchedAuthDir = ""
+		return
+	}
+	if w.watchedAuthDir != "" && w.sameNormalizedAuthPath(w.watchedAuthDir, target) {
+		w.watchedAuthDir = target
+		return
+	}
+	if errAdd := w.watcher.Add(target); errAdd != nil {
+		log.Errorf("failed to watch auth directory %s: %v", target, errAdd)
+		return
+	}
+	w.watchedAuthDir = target
+	log.Debugf("watching auth directory: %s", target)
+}

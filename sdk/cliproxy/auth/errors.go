@@ -51,6 +51,12 @@ const ErrorCodeTransientRateLimit = "transient_rate_limit"
 
 const transientRateLimitErrorCode = ErrorCodeTransientRateLimit
 
+// ErrorCodeCredentialQuota marks a rate-limit/quota refusal that applies to the
+// entire credential across all models rather than only the reporting model.
+const ErrorCodeCredentialQuota = "credential_quota"
+
+const credentialQuotaErrorCode = ErrorCodeCredentialQuota
+
 // Error describes an authentication related failure in a provider agnostic format.
 type Error struct {
 	// Code is a short machine readable identifier.
@@ -107,6 +113,14 @@ func (e *Error) Error() string {
 		return e.Message
 	}
 	return e.Code + ": " + e.Message
+}
+
+// ErrorCode returns the machine-readable error code embedded in the Error.
+func (e *Error) ErrorCode() string {
+	if e == nil {
+		return ""
+	}
+	return e.Code
 }
 
 // StatusCode implements optional status accessor for manager decision making.
