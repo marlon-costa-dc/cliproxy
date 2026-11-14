@@ -484,7 +484,7 @@ func TestIssue6199AntigravityCanceledCreditsCannotOverwriteReplacementBalance(t 
 		synctest.Wait()
 		healthyCalls := 0
 		healthyTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+			if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
 				return nil, fmt.Errorf("unexpected intercepted request: %s", req.URL)
 			}
 			healthyCalls++

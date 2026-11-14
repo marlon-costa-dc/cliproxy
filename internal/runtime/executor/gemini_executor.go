@@ -888,6 +888,7 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	translatedReq = doc.Bytes()
 	requestBody := bytes.NewReader(translatedReq)
 
+	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, requestBody)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err

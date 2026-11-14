@@ -87,6 +87,8 @@ type antigravityCreditsHintRefreshState struct {
 	task              *antigravityCreditsRefreshTask
 }
 
+type antigravityCreditsProdKey struct{}
+
 type antigravityCreditsRefreshTask struct {
 	state     *antigravityCreditsHintRefreshState
 	ctx       context.Context
@@ -408,7 +410,7 @@ func (e *AntigravityExecutor) maybeRefreshAntigravityCreditsHint(ctx context.Con
 		authCopy := auth.Clone()
 		go func(auth *cliproxyauth.Auth, token string) {
 			defer cancel()
-			e.updateAntigravityCreditsBalance(refreshCtx, auth, token)
+			e.updateAntigravityCreditsBalance(context.WithValue(refreshCtx, antigravityCreditsProdKey{}, true), auth, token)
 		}(authCopy, accessToken)
 		return
 	}
@@ -480,6 +482,9 @@ func (e *AntigravityExecutor) queueAntigravityCreditsRefresh(ctx context.Context
 		// Optional post-refresh work follows its lifecycle without adding a timer.
 		refreshCtx, cancelRefresh = context.WithCancel(lifecycle)
 	}
+	if prod, _ := ctx.Value(antigravityCreditsProdKey{}).(bool); prod {
+		refreshCtx = context.WithValue(refreshCtx, antigravityCreditsProdKey{}, true)
+	}
 	task := &antigravityCreditsRefreshTask{
 		state:     state,
 		ctx:       refreshCtx,
@@ -538,7 +543,16 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalanceForTask(ctx context
 		log.Debugf("antigravity executor: marshal loadCodeAssist request error: %v", errMarshal)
 		return
 	}
-	baseURL := resolveAntigravityRequestBaseURL(auth)
+	baseURL := antigravityBaseURLProd
+	if task != nil {
+		baseURL = antigravityLoadCodeAssistBaseURL(auth)
+	}
+	if prod, _ := ctx.Value(antigravityCreditsProdKey{}).(bool); prod {
+		baseURL = antigravityBaseURLProd
+	}
+	if custom := resolveCustomAntigravityBaseURL(auth); custom != "" {
+		baseURL = custom
+	}
 	endpointURL := strings.TrimSuffix(baseURL, "/") + "/v1internal:loadCodeAssist"
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(loadReqBody))
 	if errReq != nil {

@@ -2134,6 +2134,9 @@ func extractExplicitSessionIDs(headers http.Header, payload []byte, metadata map
 // fallbackID preserves an earlier binding when a stronger body identifier appears
 // later, and lets callers bind both identifiers when both are present.
 func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]any) (string, string) {
+	if sid := strings.TrimSpace(headers.Get("X-Opencode-Session")); sid != "" {
+		return "opencode:" + sid, ""
+	}
 	if primaryID, fallbackID := extractExplicitSessionIDs(headers, payload, metadata); primaryID != "" {
 		return primaryID, fallbackID
 	}

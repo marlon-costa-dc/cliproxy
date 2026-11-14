@@ -113,6 +113,21 @@ func (e *OpenCodeExecutor) requestAuth(auth *clipoauth.Auth, opts cliproxyexecut
 	return cloned
 }
 
+// openCodeSetAuthHeader applies the configured authentication scheme. OpenCode's
+// messages gateway reads x-api-key; other gateways read a Bearer token.
+func openCodeSetAuthHeader(req *http.Request, auth *clipoauth.Auth, apiKey string) {
+	if req == nil || apiKey == "" {
+		return
+	}
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Attributes["anthropic_auth_scheme"]), "x-api-key") {
+		req.Header.Del("Authorization")
+		req.Header.Set("x-api-key", apiKey)
+		return
+	}
+	req.Header.Del("x-api-key")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+}
+
 func (e *OpenCodeExecutor) resolveRoute(modelID string) (protocol string, url string, err error) {
 	protocol = registry.ResolveOpenCodeProtocol(e.gateway, modelID)
 	if protocol == "" {
@@ -209,9 +224,7 @@ func (e *OpenCodeExecutor) executeOpenAIEndpoint(ctx context.Context, auth *clip
 		return resp, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	openCodeSetAuthHeader(httpReq, auth, apiKey)
 	httpReq.Header.Set("User-Agent", "cli-proxy-opencode")
 	util.ApplyCustomHeadersFromAttrs(httpReq, auth.Attributes, opts.Headers)
 
@@ -289,9 +302,7 @@ func (e *OpenCodeExecutor) executeOpenAIEndpointStream(ctx context.Context, auth
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	openCodeSetAuthHeader(httpReq, auth, apiKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Cache-Control", "no-cache")
 	httpReq.Header.Set("User-Agent", "cli-proxy-opencode")
@@ -385,9 +396,7 @@ func (e *OpenCodeExecutor) PrepareRequest(req *http.Request, auth *clipoauth.Aut
 		return nil
 	}
 	token, _ := openCodeCreds(auth)
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	openCodeSetAuthHeader(req, auth, token)
 	return nil
 }
 

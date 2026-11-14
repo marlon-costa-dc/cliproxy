@@ -78,7 +78,11 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	expiry, _ := auth.ExpirationTime()
 	if accessToken != "" && expiry.After(time.Now().Add(antigravityRequestTokenSafetyWindow)) {
-		e.maybeRefreshAntigravityCreditsHint(ctx, auth, accessToken)
+		prodCtx := context.Background()
+		if ctx != nil {
+			prodCtx = context.WithValue(ctx, antigravityCreditsProdKey{}, true)
+		}
+		e.maybeRefreshAntigravityCreditsHint(prodCtx, auth, accessToken)
 		return accessToken, nil, nil
 	}
 	refreshCtx := context.Background()
@@ -95,7 +99,11 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 		if strings.TrimSpace(token) == "" {
 			return "", nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 		}
-		e.maybeRefreshAntigravityCreditsHint(ctx, refreshed, token)
+		prodCtx := context.Background()
+		if ctx != nil {
+			prodCtx = context.WithValue(ctx, antigravityCreditsProdKey{}, true)
+		}
+		e.maybeRefreshAntigravityCreditsHint(prodCtx, refreshed, token)
 		return token, refreshed, nil
 	}
 

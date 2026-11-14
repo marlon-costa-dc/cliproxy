@@ -618,6 +618,12 @@ func (value claudeDeviceProfileKVValue) ToProfile() ClaudeDeviceProfile {
 	return profile
 }
 
+// RuntimeStainlessOS returns the Stainless SDK OS name for this host.
+func RuntimeStainlessOS() string { return mapStainlessOS() }
+
+// RuntimeStainlessArch returns the Stainless SDK arch name for this host.
+func RuntimeStainlessArch() string { return mapStainlessArch() }
+
 func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfile) {
 	if r == nil {
 		return

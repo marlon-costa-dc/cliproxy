@@ -2794,6 +2794,8 @@ func terminalSuspensionReason(err *Error) string {
 	switch {
 	case err == nil:
 		return ""
+	case isRequestScopedResultError(err):
+		return ""
 	case isCloudflareChallengeResultError(err):
 		return ""
 	case isModelSupportResultError(err):

@@ -659,6 +659,15 @@ func antigravityLoadCodeAssistBaseURL(auth *cliproxyauth.Auth) string {
 	return resolveAntigravityRequestBaseURL(auth)
 }
 
+// antigravityCreditsLoadCodeAssistBaseURL targets the production credits
+// endpoint; the daily endpoint does not expose live credit balances.
+func antigravityCreditsLoadCodeAssistBaseURL(auth *cliproxyauth.Auth) string {
+	if base := resolveCustomAntigravityBaseURL(auth); base != "" {
+		return base
+	}
+	return antigravityBaseURLProd
+}
+
 func resolveHost(base string) string {
 	parsed, errParse := url.Parse(base)
 	if errParse != nil {
