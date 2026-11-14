@@ -824,7 +824,7 @@ func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bo
 
 func modelCooldownStateRecord(auth *Auth, model string, state *ModelState, now time.Time) (CooldownStateRecord, bool) {
 	model = strings.TrimSpace(model)
-	if auth == nil || state == nil || model == "" || !state.Unavailable || state.NextRetryAfter.IsZero() || !state.NextRetryAfter.After(now) {
+	if auth == nil || state == nil || model == "" || (!state.Unavailable && !state.Quota.Exceeded) || state.NextRetryAfter.IsZero() || !state.NextRetryAfter.After(now) {
 		return CooldownStateRecord{}, false
 	}
 	record := CooldownStateRecord{

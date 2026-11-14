@@ -104,7 +104,11 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 		pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		selection, errSelection := m.pickHomeDispatchSelection(ctx, routeModel, pickOpts)
 		if errSelection != nil {
-			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
+			preferredBase := lastErr
+			if upstreamErr != nil {
+				preferredBase = upstreamErr
+			}
+			preferredErr := preferredExecutionAttemptError(preferredBase, upstreamErr)
 			var homeCooldown *homeDispatchRetryAfterError
 			if lastErr != nil && errors.As(errSelection, &homeCooldown) && homeCooldown != nil {
 				observeHomeCooldownRetryLimit(homeCooldown, homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == "")
@@ -277,6 +281,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				if refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(refreshCtx, selection.Executor, preparedAuth, errExecute, didRefreshOnUnauthorized, true); errRefresh != nil {
 					errExecute = errRefresh
 					warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
+					return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExecute)
 				} else if okRefresh {
 					preparedAuth = refreshed
 					m.replaceHomeSelectionAuth(selection, preparedAuth)

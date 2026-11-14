@@ -252,8 +252,9 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 			isSuspended = true
 		}
 	}
-	if !isSuspended && state == nil && auth.Unavailable && auth.NextRetryAfter.After(now) {
+	if !isSuspended && state == nil && len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
 		// A credential-wide cooldown with no per-model state blocks every model.
+		// With per-model states, an unrelated model keeps its own projection.
 		isSuspended = true
 	}
 	if isSuspended {
