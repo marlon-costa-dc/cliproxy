@@ -3,21 +3,23 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	antigravityauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	antigravityauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
+
+const antigravityCredentialAcquisitionTimeout = 30 * time.Second
 
 // Refresh refreshes the authentication credentials using the refresh token.
 func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -74,8 +76,8 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 		return "", nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
 	}
 	accessToken := metaStringValue(auth.Metadata, "access_token")
-	expiry := tokenExpiry(auth.Metadata)
-	if accessToken != "" && expiry.After(time.Now().Add(refreshSkew)) {
+	expiry, _ := auth.ExpirationTime()
+	if accessToken != "" && expiry.After(time.Now().Add(antigravityRequestTokenSafetyWindow)) {
 		e.maybeRefreshAntigravityCreditsHint(ctx, auth, accessToken)
 		return accessToken, nil, nil
 	}
@@ -124,7 +126,9 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 
 	refreshKey := clientID + "\x00" + refreshToken
 	result, errRefresh, _ := antigravityRefreshGroup.Do(refreshKey, func() (interface{}, error) {
-		return e.refreshTokenSingleFlight(context.WithoutCancel(ctx), auth, refreshToken, clientID, clientSecret)
+		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), antigravityCredentialAcquisitionTimeout)
+		defer cancelRefresh()
+		return e.refreshTokenSingleFlight(refreshCtx, auth, refreshToken, clientID, clientSecret)
 	})
 	if errRefresh != nil {
 		return auth, errRefresh
@@ -149,7 +153,7 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
 		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
 	}
-	e.updateAntigravityCreditsBalance(ctx, auth, tokenResp.AccessToken)
+	e.queueAntigravityCreditsRefresh(ctx, auth, tokenResp.AccessToken, 0)
 	return auth, nil
 }
 
@@ -189,7 +193,7 @@ func (e *AntigravityExecutor) refreshTokenSingleFlight(ctx context.Context, auth
 	httpReq.Header.Set("User-Agent", "Go-http-client/2.0")
 
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "oauth_refresh").Do(httpReq)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -255,8 +259,15 @@ func (e *AntigravityExecutor) fetchAntigravityProjectID(ctx context.Context, aut
 		return "", nil
 	}
 
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
-	projectID, errFetch := sdkAuth.FetchAntigravityProjectID(ctx, token, httpClient)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Project discovery is required credential preparation, not a generation request.
+	acquisitionCtx, cancelAcquisition := context.WithTimeout(ctx, antigravityCredentialAcquisitionTimeout)
+	defer cancelAcquisition()
+	httpClient := newAntigravityHTTPClient(acquisitionCtx, e.cfg, auth, 0)
+	tracedClient := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "project_discovery")
+	projectID, errFetch := sdkAuth.FetchAntigravityProjectID(acquisitionCtx, token, tracedClient)
 	if errFetch != nil {
 		return "", errFetch
 	}
@@ -282,30 +293,28 @@ func antigravityProjectIDFromAuth(auth *cliproxyauth.Auth) string {
 
 func missingAntigravityProjectIDError(cause error) statusErr {
 	msg := "antigravity auth missing project_id"
+	statusCode := http.StatusBadRequest
+	var retryAfter *time.Duration
 	if cause != nil {
 		msg = fmt.Sprintf("%s: %v", msg, cause)
-	}
-	return statusErr{code: http.StatusBadRequest, msg: msg}
-}
-
-func tokenExpiry(metadata map[string]any) time.Time {
-	if metadata == nil {
-		return time.Time{}
-	}
-	if expStr, ok := metadata["expired"].(string); ok {
-		expStr = strings.TrimSpace(expStr)
-		if expStr != "" {
-			if parsed, errParse := time.Parse(time.RFC3339, expStr); errParse == nil {
-				return parsed
+		type statusCoder interface {
+			StatusCode() int
+		}
+		var sc statusCoder
+		if errors.As(cause, &sc) && sc != nil {
+			if code := sc.StatusCode(); code > 0 {
+				statusCode = code
 			}
 		}
+		type retryAfterProvider interface {
+			RetryAfter() *time.Duration
+		}
+		var rap retryAfterProvider
+		if errors.As(cause, &rap) && rap != nil {
+			retryAfter = rap.RetryAfter()
+		}
 	}
-	expiresIn, hasExpires := int64Value(metadata["expires_in"])
-	tsMs, hasTimestamp := int64Value(metadata["timestamp"])
-	if hasExpires && hasTimestamp {
-		return time.Unix(0, tsMs*int64(time.Millisecond)).Add(time.Duration(expiresIn) * time.Second)
-	}
-	return time.Time{}
+	return statusErr{code: statusCode, msg: msg, retryAfter: retryAfter}
 }
 
 func metaStringValue(metadata map[string]any, key string) string {
@@ -321,27 +330,4 @@ func metaStringValue(metadata map[string]any, key string) string {
 		}
 	}
 	return ""
-}
-
-func int64Value(value any) (int64, bool) {
-	switch typed := value.(type) {
-	case int:
-		return int64(typed), true
-	case int64:
-		return typed, true
-	case float64:
-		return int64(typed), true
-	case json.Number:
-		if i, errParse := typed.Int64(); errParse == nil {
-			return i, true
-		}
-	case string:
-		if strings.TrimSpace(typed) == "" {
-			return 0, false
-		}
-		if i, errParse := strconv.ParseInt(strings.TrimSpace(typed), 10, 64); errParse == nil {
-			return i, true
-		}
-	}
-	return 0, false
 }

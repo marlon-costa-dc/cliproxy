@@ -8,11 +8,12 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -61,6 +62,15 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 	}
 
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
+	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, liveSelectionHeaders(c), nil, map[string]any{
+		coreexecutor.ExecutionSessionMetadataKey: callID,
+	})
+	if session.sessionID != "" {
+		meta := logging.GetClientRequestMetadata(ctx)
+		meta.SessionID = session.sessionID
+		meta.ParentSessionID = session.parentSessionID
+		ctx = logging.WithClientRequestMetadata(ctx, meta)
+	}
 	var activeSelection *auth.HomeDispatchSelection
 	var temporarySelection bool
 	var selected *auth.Auth
@@ -79,6 +89,19 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 		if errSelect != nil {
 			writeSelectionError(c, errSelect)
 			return
+		}
+		if selection != nil && selection.CanonicalSessionID != "" {
+			meta := logging.GetClientRequestMetadata(ctx)
+			meta.SessionID = selection.CanonicalSessionID
+			if selection.ParentSessionID != "" {
+				meta.ParentSessionID = selection.ParentSessionID
+			} else {
+				meta.ParentSessionID = ""
+			}
+			if meta.SessionID == meta.ParentSessionID {
+				meta.ParentSessionID = ""
+			}
+			ctx = logging.WithClientRequestMetadata(ctx, meta)
 		}
 		activeSelection = selection
 		selected = selectedAuth
@@ -113,7 +136,7 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 
 	body, errRead := readBody(c.Request.Body)
 	if errRead != nil {
-		writeRealtimeError(c, http.StatusBadRequest, errRead.Error(), "invalid_request_error", "invalid_request")
+		writeRealtimeError(c, clienterror.HTTPStatusFromErrorOr(errRead, http.StatusBadRequest), errRead.Error(), "invalid_request_error", "invalid_request")
 		return
 	}
 	upstreamURL := h.realtimeHTTPBaseURL() + "/realtime/calls/" + url.PathEscape(callID) + "/hangup"
