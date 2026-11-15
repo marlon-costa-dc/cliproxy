@@ -5,8 +5,9 @@ adds the small DataCosmos routing publication contract and the provider behavior
 required by verified consumers. The official v8 management API remains the
 management surface. See [the API contract](docs/management-api-v8.md).
 
-- **main** receives no pushes from this fork, by workflow or by hand (operator
-  ruling 2026-11-14). Upstream is read directly from router-for-me.
+- **main** mirrors the exact official upstream tip. The scheduled workflow on
+  `dc-use` advances it by fast-forward only. No fork commits are pushed there.
+  An equal tip is a no-op; a divergent tip fails without overwriting history.
 - **dc-use** is the default, integration and release branch; every package
   ships from its tip. Bring the selected upstream
   tag into it with a reviewed merge PR. Keep a named delta with its consumer and
