@@ -5,18 +5,17 @@ adds the small DataCosmos routing publication contract and the provider behavior
 required by verified consumers. The official v8 management API remains the
 management surface. See [the API contract](docs/management-api-v8.md).
 
-- **main** is an exact upstream mirror. The scheduled workflow on the default
-  branch fast-forwards it only. If it contains fork history, preserve that
-  history and reconcile the ref explicitly before declaring it a mirror.
-- **dc-use** is the integration and release branch. Bring the selected upstream
+- **main** receives no pushes from this fork, by workflow or by hand (operator
+  ruling 2026-11-14). Upstream is read directly from router-for-me.
+- **dc-use** is the default, integration and release branch; every package
+  ships from its tip. Bring the selected upstream
   tag into it with a reviewed merge PR. Keep a named delta with its consumer and
   evidence, and delete it when the official code provides the same behavior.
 - **contrib/** starts from the official base and carries only the proposed
   upstream change. Open those PRs against the official repository; never send
   the integration branch upstream.
 - **super-fork/** holds third-party code imports and large experiments.
-  Integration takes only proven, reviewed changes from these branches; the
-  mirror does not take merges from them.
+  Integration takes only proven, reviewed changes from these branches.
 
 A stable fork build uses the actual integrated upstream release plus the next
 local revision, such as `v8.0.71-dc1`. Record the upstream tag and its peeled
