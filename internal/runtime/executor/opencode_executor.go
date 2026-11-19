@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -21,7 +22,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -550,7 +550,7 @@ const openCodeAccountLimitError = "GoUsageLimitError"
 // every model it serves instead of only the model that answered.
 func newOpenCodeStatusError(status int, headers http.Header, body []byte) statusErr {
 	err := newOpenAICompatStatusError(status, headers, body)
-	if status == http.StatusTooManyRequests && gjson.GetBytes(body, "error.type").String() == openCodeAccountLimitError {
+	if status == http.StatusTooManyRequests && ojson.GetBytesNoCopy(body, "error.type").String() == openCodeAccountLimitError {
 		err.credentialScoped = true
 	}
 	return err
