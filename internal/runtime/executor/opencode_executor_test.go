@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -390,4 +391,38 @@ func TestOpenCodeCatalogUsesDeclaredCanonicalIDAndAPICapability(t *testing.T) {
 		model.CatalogRouteModelID != model.ID {
 		t.Fatalf("model identity does not preserve the producer's declaration: %+v", model)
 	}
+}
+
+// An OpenCode usage limit states the account's reset as Retry-After; the
+// executor error carries it so the credential cools down until that reset
+// instead of the generic backoff, on both the unary and the stream path.
+func TestOpenCodeExecutor_UsageLimitKeepsRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "273866")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"usage limit reached"}}`))
+	}))
+	t.Cleanup(server.Close)
+	exec := NewOpenCodeExecutor(constant.OpenCodeGo)
+	exec.cfg = &config.Config{}
+	auth := &clipoauth.Auth{
+		Provider:   constant.OpenCodeGo,
+		Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
+	}
+	payload := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"PONG"}]}`)
+	req := cliproxyexecutor.Request{Model: "deepseek-v4-pro", Payload: payload}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload}
+	want := 273866 * time.Second
+	check := func(path string, err error) {
+		t.Helper()
+		retry, ok := err.(interface{ RetryAfter() *time.Duration })
+		if !ok || retry.RetryAfter() == nil || *retry.RetryAfter() != want {
+			t.Fatalf("%s: error %v does not carry Retry-After %s", path, err, want)
+		}
+	}
+	_, err := exec.Execute(context.Background(), auth, req, opts)
+	check("execute", err)
+	_, err = exec.ExecuteStream(context.Background(), auth, req, opts)
+	check("stream", err)
 }

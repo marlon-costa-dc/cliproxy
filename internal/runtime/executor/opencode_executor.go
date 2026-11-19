@@ -338,7 +338,10 @@ func (e *OpenCodeExecutor) executeOpenAIEndpoint(ctx context.Context, auth *clip
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("opencode executor: error status: %d, message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
+		// OpenCode states each account's reset as Retry-After (about 4 h for a
+		// free-tier limit, days for a Go weekly or monthly one); the cooldown
+		// keeps it instead of the generic backoff.
+		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, data)
 		return resp, err
 	}
 
@@ -411,7 +414,7 @@ func (e *OpenCodeExecutor) executeOpenAIEndpointStream(ctx context.Context, auth
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("opencode executor: close response body error: %v", errClose)
 		}
-		return nil, statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return nil, newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, b)
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk, 64)
