@@ -91,22 +91,23 @@ jobs:
               return 1
             fi
 
+            # A just-dispatched run can report its workflow name as the title
+            # until its run-name is evaluated, so the identity is re-read until
+            # it matches or the wait ends.
+            metadata=""
             for _ in $(seq 1 20); do
               if metadata="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" \
-                --json displayTitle,event,headSha 2>/dev/null)"; then
-                if ! jq -e --arg title "$title" --arg commit "$commit" \
+                --json displayTitle,event,headSha 2>/dev/null)" &&
+                jq -e --arg title "$title" --arg commit "$commit" \
                   '.displayTitle == $title and .event == "workflow_dispatch" and .headSha == $commit' \
                   <<<"$metadata" >/dev/null; then
-                  echo "Unexpected run identity at $dispatch_url; expected $title." >&2
-                  return 1
-                fi
                 printf -- '- %s: %s\n' "$workflow" "$dispatch_url" >> "$GITHUB_STEP_SUMMARY"
                 gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
                 return
               fi
               sleep 5
             done
-            echo "Unable to read dispatched run $dispatch_url for $title." >&2
+            echo "Run identity at $dispatch_url never matched $title: ${metadata:-unreadable}." >&2
             return 1
           }
 
