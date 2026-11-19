@@ -21,6 +21,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -338,10 +339,7 @@ func (e *OpenCodeExecutor) executeOpenAIEndpoint(ctx context.Context, auth *clip
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("opencode executor: error status: %d, message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		// OpenCode states each account's reset as Retry-After (about 4 h for a
-		// free-tier limit, days for a Go weekly or monthly one); the cooldown
-		// keeps it instead of the generic backoff.
-		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, data)
+		err = newOpenCodeStatusError(httpResp.StatusCode, httpResp.Header, data)
 		return resp, err
 	}
 
@@ -414,7 +412,7 @@ func (e *OpenCodeExecutor) executeOpenAIEndpointStream(ctx context.Context, auth
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("opencode executor: close response body error: %v", errClose)
 		}
-		return nil, newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, b)
+		return nil, newOpenCodeStatusError(httpResp.StatusCode, httpResp.Header, b)
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk, 64)
@@ -539,4 +537,21 @@ func authAccountInfo(auth *clipoauth.Auth) (string, string, string, string) {
 	}
 	authType, authValue := auth.AccountInfo()
 	return auth.ID, auth.Label, authType, authValue
+}
+
+// openCodeAccountLimitError is the usage limit OpenCode applies to the whole
+// account (the Go weekly or monthly limit); FreeUsageLimitError covers only
+// the free models and stays scoped to the model that answered it.
+const openCodeAccountLimitError = "GoUsageLimitError"
+
+// newOpenCodeStatusError keeps the provider's Retry-After, so the cooldown
+// lasts until the account's stated reset (about 4 h for a free-tier limit,
+// days for a Go one), and an account-wide limit cools the credential down for
+// every model it serves instead of only the model that answered.
+func newOpenCodeStatusError(status int, headers http.Header, body []byte) statusErr {
+	err := newOpenAICompatStatusError(status, headers, body)
+	if status == http.StatusTooManyRequests && gjson.GetBytes(body, "error.type").String() == openCodeAccountLimitError {
+		err.credentialScoped = true
+	}
+	return err
 }

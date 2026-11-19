@@ -394,35 +394,51 @@ func TestOpenCodeCatalogUsesDeclaredCanonicalIDAndAPICapability(t *testing.T) {
 }
 
 // An OpenCode usage limit states the account's reset as Retry-After; the
-// executor error carries it so the credential cools down until that reset
-// instead of the generic backoff, on both the unary and the stream path.
-func TestOpenCodeExecutor_UsageLimitKeepsRetryAfter(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Retry-After", "273866")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"usage limit reached"}}`))
-	}))
-	t.Cleanup(server.Close)
-	exec := NewOpenCodeExecutor(constant.OpenCodeGo)
-	exec.cfg = &config.Config{}
-	auth := &clipoauth.Auth{
-		Provider:   constant.OpenCodeGo,
-		Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
+// executor error carries it so the cooldown lasts until that reset instead of
+// the generic backoff, on both the unary and the stream path. The Go limit
+// covers the whole account, so it cools down the credential; the free-tier
+// limit covers only the free models and stays scoped to the model.
+func TestOpenCodeExecutor_UsageLimitKeepsRetryAfterAndScope(t *testing.T) {
+	for _, tc := range []struct {
+		errorType        string
+		credentialScoped bool
+	}{
+		{"GoUsageLimitError", true},
+		{"FreeUsageLimitError", false},
+	} {
+		t.Run(tc.errorType, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "273866")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"type":"error","error":{"type":"` + tc.errorType + `","message":"usage limit reached"}}`))
+			}))
+			t.Cleanup(server.Close)
+			exec := NewOpenCodeExecutor(constant.OpenCodeGo)
+			exec.cfg = &config.Config{}
+			auth := &clipoauth.Auth{
+				Provider:   constant.OpenCodeGo,
+				Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
+			}
+			payload := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"PONG"}]}`)
+			req := cliproxyexecutor.Request{Model: "deepseek-v4-pro", Payload: payload}
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload}
+			want := 273866 * time.Second
+			check := func(path string, err error) {
+				t.Helper()
+				retry, ok := err.(interface{ RetryAfter() *time.Duration })
+				if !ok || retry.RetryAfter() == nil || *retry.RetryAfter() != want {
+					t.Fatalf("%s: error %v does not carry Retry-After %s", path, err, want)
+				}
+				scoped, ok := err.(interface{ IsCredentialScoped() bool })
+				if !ok || scoped.IsCredentialScoped() != tc.credentialScoped {
+					t.Fatalf("%s: credential scope = %v, want %v", path, ok && scoped.IsCredentialScoped(), tc.credentialScoped)
+				}
+			}
+			_, err := exec.Execute(context.Background(), auth, req, opts)
+			check("execute", err)
+			_, err = exec.ExecuteStream(context.Background(), auth, req, opts)
+			check("stream", err)
+		})
 	}
-	payload := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"PONG"}]}`)
-	req := cliproxyexecutor.Request{Model: "deepseek-v4-pro", Payload: payload}
-	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload}
-	want := 273866 * time.Second
-	check := func(path string, err error) {
-		t.Helper()
-		retry, ok := err.(interface{ RetryAfter() *time.Duration })
-		if !ok || retry.RetryAfter() == nil || *retry.RetryAfter() != want {
-			t.Fatalf("%s: error %v does not carry Retry-After %s", path, err, want)
-		}
-	}
-	_, err := exec.Execute(context.Background(), auth, req, opts)
-	check("execute", err)
-	_, err = exec.ExecuteStream(context.Background(), auth, req, opts)
-	check("stream", err)
 }
