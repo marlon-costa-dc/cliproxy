@@ -2,7 +2,6 @@ package synthesizer
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/json"
 	qoderauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/qoder"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -1296,7 +1296,11 @@ func TestFileSynthesizerRecordsIncompleteFiles(t *testing.T) {
 		}
 	})
 }
-func TestSynthesizeAuthFileExpandsTrustedGeminiCLIPluginAuth(t *testing.T) {
+
+// The built-in gemini-cli provider is removed: a plugin-parsed gemini-cli auth
+// with several projects is kept as parsed (no virtual project expansion) and
+// still inherits the file's priority and note.
+func TestSynthesizeAuthFileKeepsPluginGeminiCLIAuthUnexpanded(t *testing.T) {
 	tempDir := t.TempDir()
 
 	authData := map[string]any{
@@ -1325,24 +1329,19 @@ func TestSynthesizeAuthFileExpandsTrustedGeminiCLIPluginAuth(t *testing.T) {
 	if errSynthesize != nil {
 		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
 	}
-	if len(auths) != 3 {
-		t.Fatalf("expected 3 auths (1 primary + 2 virtuals), got %d", len(auths))
+	if len(auths) != 1 {
+		t.Fatalf("expected the single plugin auth without virtual expansion, got %d", len(auths))
 	}
 
 	primary := auths[0]
-	if gotNote := primary.Attributes["note"]; gotNote != "production keys" {
-		t.Errorf("expected primary note %q, got %q", "production keys", gotNote)
+	if primary.Disabled {
+		t.Error("plugin auth must not be disabled as a virtual primary")
 	}
-
-	// Verify virtuals inherit note
-	for i := 1; i < len(auths); i++ {
-		v := auths[i]
-		if gotNote := v.Attributes["note"]; gotNote != "production keys" {
-			t.Errorf("expected virtual %d note %q, got %q", i, "production keys", gotNote)
-		}
-		if gotPriority := v.Attributes["priority"]; gotPriority != "5" {
-			t.Errorf("expected virtual %d priority %q, got %q", i, "5", gotPriority)
-		}
+	if gotNote := primary.Attributes["note"]; gotNote != "production keys" {
+		t.Errorf("expected note %q, got %q", "production keys", gotNote)
+	}
+	if gotPriority := primary.Attributes["priority"]; gotPriority != "5" {
+		t.Errorf("expected priority %q, got %q", "5", gotPriority)
 	}
 }
 

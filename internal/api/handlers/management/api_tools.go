@@ -3,7 +3,6 @@ package management
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
 	antigravityauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
@@ -20,7 +20,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
@@ -28,17 +27,6 @@ import (
 )
 
 const defaultAPICallTimeout = 60 * time.Second
-
-const (
-	geminiOAuthClientIDEnv = "CLIPROXY_GEMINI_OAUTH_CLIENT_ID"
-	geminiOAuthSecretEnv   = "CLIPROXY_GEMINI_OAUTH_CLIENT_SECRET"
-)
-
-var geminiOAuthScopes = []string{
-	"https://www.googleapis.com/auth/cloud-platform",
-	"https://www.googleapis.com/auth/userinfo.email",
-	"https://www.googleapis.com/auth/userinfo.profile",
-}
 
 const (
 	antigravityOAuthClientIDEnv     = "CLIPROXY_ANTIGRAVITY_OAUTH_CLIENT_ID"
@@ -840,24 +828,6 @@ func int64Value(raw any) int64 {
 		}
 	}
 	return 0
-}
-
-func geminiOAuthMetadata(auth *coreauth.Auth) (map[string]any, func(map[string]any)) {
-	if auth == nil {
-		return nil, nil
-	}
-	if shared := geminicli.ResolveSharedCredential(auth.Runtime); shared != nil {
-		snapshot := shared.MetadataSnapshot()
-		return snapshot, func(fields map[string]any) { shared.MergeMetadata(fields) }
-	}
-	return auth.Metadata, func(fields map[string]any) {
-		if auth.Metadata == nil {
-			auth.Metadata = make(map[string]any)
-		}
-		for key, value := range fields {
-			auth.Metadata[key] = value
-		}
-	}
 }
 
 func stringValue(metadata map[string]any, key string) string {

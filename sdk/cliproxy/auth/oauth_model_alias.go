@@ -1,9 +1,9 @@
 package auth
 
 import (
-	"encoding/json"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 )
@@ -58,7 +58,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			if name == "" || alias == "" {
 				continue
 			}
-			if strings.EqualFold(name, alias) {
+			if name == alias {
 				continue
 			}
 			aliasKey := strings.ToLower(alias)
@@ -324,10 +324,27 @@ func (m *Manager) resolveOAuthModelAliasWithResult(auth *Auth, requestedModel st
 	if channel == "" {
 		return OAuthModelAliasResult{}
 	}
-	if result := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); result.UpstreamModel != "" {
+	if result, matched := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); matched {
 		return result
 	}
 	return resolveUpstreamModelFromAliasTable(m, auth, requestedModel, channel)
+}
+
+// lookupExactOAuthModelAlias reads the configured entry without suffix fallback or inheritance.
+func (m *Manager) lookupExactOAuthModelAlias(auth *Auth, alias string) oauthModelAliasEntry {
+	channel := modelAliasChannel(auth)
+	if channel == "" || alias == "" {
+		return oauthModelAliasEntry{}
+	}
+	for _, entry := range OAuthModelAliasesFromAttributes(auth.Attributes) {
+		if strings.EqualFold(entry.Alias, alias) {
+			return oauthModelAliasEntry{upstreamModel: entry.Name, configAlias: entry.Alias, forceMapping: entry.ForceMapping}
+		}
+	}
+	if table, _ := m.oauthModelAlias.Load().(*oauthModelAliasTable); table != nil {
+		return table.reverse[channel][strings.ToLower(alias)]
+	}
+	return oauthModelAliasEntry{}
 }
 
 func authAttributes(auth *Auth) map[string]string {
@@ -389,13 +406,13 @@ func sanitizeOAuthModelAliases(aliases []internalconfig.OAuthModelAlias) []inter
 	return append([]internalconfig.OAuthModelAlias(nil), clean...)
 }
 
-func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, requestedModel string) OAuthModelAliasResult {
+func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, requestedModel string) (OAuthModelAliasResult, bool) {
 	if len(aliases) == 0 {
-		return OAuthModelAliasResult{}
+		return OAuthModelAliasResult{}, false
 	}
 	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
 	if len(candidates) == 0 {
-		return OAuthModelAliasResult{}
+		return OAuthModelAliasResult{}, false
 	}
 	baseModel := requestResult.ModelName
 	if baseModel == "" {
@@ -412,15 +429,15 @@ func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, r
 			if original == "" || alias == "" || !strings.EqualFold(alias, key) {
 				continue
 			}
-			if strings.EqualFold(original, baseModel) {
+			if original == baseModel {
 				if !entry.ForceMapping {
-					return OAuthModelAliasResult{}
+					return OAuthModelAliasResult{}, true
 				}
 				return OAuthModelAliasResult{
 					UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
 					ForceMapping:  entry.ForceMapping,
 					OriginalAlias: oauthModelAliasForceMappingResponseModel(alias),
-				}
+				}, true
 			}
 			originalAlias := requestedModel
 			if entry.ForceMapping {
@@ -430,10 +447,10 @@ func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, r
 				UpstreamModel: preserveResolvedModelSuffix(original, requestResult),
 				ForceMapping:  entry.ForceMapping,
 				OriginalAlias: originalAlias,
-			}
+			}, true
 		}
 	}
-	return OAuthModelAliasResult{}
+	return OAuthModelAliasResult{}, false
 }
 
 func (m *Manager) applyOAuthModelAliasWithResult(auth *Auth, requestedModel string) OAuthModelAliasResult {
@@ -480,7 +497,7 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 			continue
 		}
 
-		if strings.EqualFold(targetModel, baseModel) {
+		if targetModel == baseModel {
 			if !entry.forceMapping {
 				return OAuthModelAliasResult{}
 			}
@@ -530,7 +547,7 @@ func modelAliasChannel(auth *Auth) string {
 // and auth kind. Returns empty string if the provider/authKind combination doesn't support
 // OAuth model alias (e.g., API key authentication).
 //
-// Built-in channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, iflow, kiro, github-copilot, kimi, xai, meta, qoder.
+// Built-in channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, iflow, kiro, github-copilot, copilot, kimi, xai, meta, qoder.
 // Plugin OAuth providers use their normalized provider key as the channel.
 func OAuthModelAliasChannel(provider, authKind string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))

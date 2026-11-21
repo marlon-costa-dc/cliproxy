@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -29,7 +28,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -87,7 +85,6 @@ type commandModeOptions struct {
 	vertexImport       string
 	siwcBind           string
 	pluginCommandLine  bool
-	login              bool
 	antigravityLogin   bool
 	githubCopilotLogin bool
 	codeBuddyLogin     bool
@@ -109,6 +106,7 @@ type commandModeOptions struct {
 	kiroImport         bool
 	kiroIDCLogin       bool
 	xaiLogin           bool
+	copilotLogin       bool
 	devinLogin         bool
 	metaLogin          bool
 	qoderLogin         bool
@@ -118,7 +116,6 @@ func isOneShotCommandMode(opts commandModeOptions) bool {
 	return strings.TrimSpace(opts.vertexImport) != "" ||
 		strings.TrimSpace(opts.siwcBind) != "" ||
 		opts.pluginCommandLine ||
-		opts.login ||
 		opts.antigravityLogin ||
 		opts.githubCopilotLogin ||
 		opts.codeBuddyLogin ||
@@ -140,6 +137,7 @@ func isOneShotCommandMode(opts commandModeOptions) bool {
 		opts.kiroImport ||
 		opts.kiroIDCLogin ||
 		opts.xaiLogin ||
+		opts.copilotLogin ||
 		opts.devinLogin ||
 		opts.metaLogin ||
 		opts.qoderLogin
@@ -196,7 +194,6 @@ func run() (exitStatus int) {
 	}
 
 	// Command-line flags to control the application's behavior.
-	var login bool
 	var codexLogin bool
 	var codexDeviceLogin bool
 	var claudeLogin bool
@@ -224,10 +221,10 @@ func run() (exitStatus int) {
 	var codeBuddyLogin bool
 	var kimiAILogin bool
 	var xaiLogin bool
+	var copilotLogin bool
 	var devinLogin bool
 	var metaLogin bool
 	var qoderLogin bool
-	var projectID string
 	var discoverGateways bool
 	var discoverTimeout int
 	var discoverJSON bool
@@ -249,7 +246,6 @@ func run() (exitStatus int) {
 	var localModel bool
 
 	// Define command-line flags for different operation modes.
-	flag.BoolVar(&login, "login", false, "Login Google Account")
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
 	flag.BoolVar(&codexDeviceLogin, "codex-device-login", false, "Login to Codex using device code flow")
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
@@ -279,10 +275,10 @@ func run() (exitStatus int) {
 	flag.BoolVar(&githubCopilotLogin, "github-copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&codeBuddyLogin, "codebuddy-login", false, "Login to CodeBuddy using browser OAuth flow")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
+	flag.BoolVar(&copilotLogin, "copilot-login", false, "Login to Copilot using device OAuth")
 	flag.BoolVar(&devinLogin, "devin-login", false, "Login to Devin using OAuth")
 	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta using OAuth")
 	flag.BoolVar(&qoderLogin, "qoder-login", false, "Login to Qoder using Enterprise PAT or OAuth device flow")
-	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
 	flag.IntVar(&discoverTimeout, "discover-timeout", 3, "Timeout in seconds for LAN discovery (default 3s)")
 	flag.BoolVar(&discoverJSON, "discover-json", false, "Output discovered gateways in JSON format")
@@ -587,9 +583,10 @@ func run() (exitStatus int) {
 		pgStoreLocalPath = filepath.Join(pgStoreLocalPath, "pgstore")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		pgStoreInst, err = store.NewPostgresStore(ctx, store.PostgresStoreConfig{
-			DSN:      pgStoreDSN,
-			Schema:   pgStoreSchema,
-			SpoolDir: pgStoreLocalPath,
+			DSN:            pgStoreDSN,
+			Schema:         pgStoreSchema,
+			SpoolDir:       pgStoreLocalPath,
+			OptionalConfig: isCloudDeploy,
 		})
 		cancel()
 		if err != nil {
@@ -597,19 +594,14 @@ func run() (exitStatus int) {
 			return 1
 		}
 		examplePath := filepath.Join(wd, "config.example.yaml")
-		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-		if errBootstrap := pgStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
-			cancel()
-			log.Errorf("failed to bootstrap postgres-backed config: %v", errBootstrap)
+		configFilePath = pgStoreInst.ConfigPath()
+		cfg, err = pgStoreInst.BootstrapConfig(context.Background(), examplePath)
+		if err != nil {
+			log.Errorf("failed to bootstrap postgres-backed config: %v", err)
 			return 1
 		}
-		cancel()
-		configFilePath = pgStoreInst.ConfigPath()
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
-		if err == nil {
-			cfg.AuthDir = pgStoreInst.AuthDir()
-			log.Infof("postgres-backed token store enabled, workspace path: %s", pgStoreInst.WorkDir())
-		}
+		cfg.AuthDir = pgStoreInst.AuthDir()
+		log.Infof("postgres-backed token store enabled, workspace path: %s", pgStoreInst.WorkDir())
 	} else if useObjectStore {
 		if objectStoreLocalPath == "" {
 			if writableBase != "" {
@@ -647,13 +639,14 @@ func run() (exitStatus int) {
 		}
 		resolvedEndpoint = strings.TrimRight(resolvedEndpoint, "/")
 		objCfg := store.ObjectStoreConfig{
-			Endpoint:  resolvedEndpoint,
-			Bucket:    objectStoreBucket,
-			AccessKey: objectStoreAccess,
-			SecretKey: objectStoreSecret,
-			LocalRoot: objectStoreRoot,
-			UseSSL:    useSSL,
-			PathStyle: true,
+			Endpoint:       resolvedEndpoint,
+			Bucket:         objectStoreBucket,
+			AccessKey:      objectStoreAccess,
+			SecretKey:      objectStoreSecret,
+			LocalRoot:      objectStoreRoot,
+			UseSSL:         useSSL,
+			PathStyle:      true,
+			OptionalConfig: isCloudDeploy,
 		}
 		objectStoreInst, err = store.NewObjectTokenStore(objCfg)
 		if err != nil {
@@ -661,22 +654,14 @@ func run() (exitStatus int) {
 			return 1
 		}
 		examplePath := filepath.Join(wd, "config.example.yaml")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if errBootstrap := objectStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
-			cancel()
-			log.Errorf("failed to bootstrap object-backed config: %v", errBootstrap)
+		configFilePath = objectStoreInst.ConfigPath()
+		cfg, err = objectStoreInst.BootstrapConfig(context.Background(), examplePath)
+		if err != nil {
+			log.Errorf("failed to bootstrap object-backed config: %v", err)
 			return 1
 		}
-		cancel()
-		configFilePath = objectStoreInst.ConfigPath()
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
-		if err == nil {
-			if cfg == nil {
-				cfg = &config.Config{}
-			}
-			cfg.AuthDir = objectStoreInst.AuthDir()
-			log.Infof("object-backed token store enabled, bucket: %s", objectStoreBucket)
-		}
+		cfg.AuthDir = objectStoreInst.AuthDir()
+		log.Infof("object-backed token store enabled, bucket: %s", objectStoreBucket)
 	} else if useGitStore {
 		if gitStoreLocalPath == "" {
 			if writableBase != "" {
@@ -689,38 +674,16 @@ func run() (exitStatus int) {
 		authDir := filepath.Join(gitStoreRoot, "auths")
 		gitStoreInst = store.NewGitTokenStore(gitStoreRemoteURL, gitStoreUser, gitStorePassword, gitStoreBranch)
 		gitStoreInst.SetBaseDir(authDir)
-		if errRepo := gitStoreInst.EnsureRepository(); errRepo != nil {
-			log.Errorf("failed to prepare git token store: %v", errRepo)
+		gitStoreInst.SetOptionalConfig(isCloudDeploy)
+		examplePath := filepath.Join(wd, "config.example.yaml")
+		cfg, err = gitStoreInst.BootstrapConfig(context.Background(), examplePath)
+		if err != nil {
+			log.Errorf("failed to bootstrap git-backed config: %v", err)
 			return 1
 		}
 		configFilePath = gitStoreInst.ConfigPath()
-		if configFilePath == "" {
-			configFilePath = filepath.Join(gitStoreRoot, "config", "config.yaml")
-		}
-		if _, statErr := os.Stat(configFilePath); errors.Is(statErr, fs.ErrNotExist) {
-			examplePath := filepath.Join(wd, "config.example.yaml")
-			if _, errExample := os.Stat(examplePath); errExample != nil {
-				log.Errorf("failed to find template config file: %v", errExample)
-				return 1
-			}
-			if errCopy := misc.CopyConfigTemplate(examplePath, configFilePath); errCopy != nil {
-				log.Errorf("failed to bootstrap git-backed config: %v", errCopy)
-				return 1
-			}
-			if errCommit := persistSeededConfig(context.Background(), configFilePath, gitStoreInst.PersistConfig); errCommit != nil {
-				log.Errorf("failed to commit initial git-backed config: %v", errCommit)
-				return 1
-			}
-			log.Infof("git-backed config initialized from template: %s", configFilePath)
-		} else if statErr != nil {
-			log.Errorf("failed to inspect git-backed config: %v", statErr)
-			return 1
-		}
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
-		if err == nil {
-			cfg.AuthDir = gitStoreInst.AuthDir()
-			log.Infof("git-backed token store enabled, repository path: %s", gitStoreRoot)
-		}
+		cfg.AuthDir = gitStoreInst.AuthDir()
+		log.Infof("git-backed token store enabled, repository path: %s", gitStoreRoot)
 	} else if configPath != "" {
 		configFilePath = configPath
 		cfg, err = config.LoadConfigOptional(configPath, isCloudDeploy)
@@ -741,28 +704,13 @@ func run() (exitStatus int) {
 		cfg = &config.Config{}
 	}
 
-	// In cloud deploy mode, check if we have a valid configuration
 	var configFileExists bool
 	if isCloudDeploy {
-		if configLoadedFromHome && cfg != nil {
-			configFileExists = cfg.Port != 0
+		configFileExists = cfg.Port != 0 && (configLoadedFromHome || cfg.SourceHash != "")
+		if configFileExists {
+			log.Info("Cloud deploy mode: Configuration detected; starting service")
 		} else {
-			if info, errStat := os.Stat(configFilePath); errStat != nil {
-				// Don't mislead: API server will not start until configuration is provided.
-				log.Info("Cloud deploy mode: No configuration file detected; standing by for configuration")
-				configFileExists = false
-			} else if info.IsDir() {
-				log.Info("Cloud deploy mode: Config path is a directory; standing by for configuration")
-				configFileExists = false
-			} else if cfg.Port == 0 {
-				// LoadConfigOptional returns empty config when file is empty or invalid.
-				// Config file exists but is empty or invalid; treat as missing config
-				log.Info("Cloud deploy mode: Configuration file is empty or invalid; standing by for valid configuration")
-				configFileExists = false
-			} else {
-				log.Info("Cloud deploy mode: Configuration file detected; starting service")
-				configFileExists = true
-			}
+			log.Info("Cloud deploy mode: Standing by for valid configuration")
 		}
 	}
 	usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
@@ -801,7 +749,6 @@ func run() (exitStatus int) {
 		vertexImport:       vertexImport,
 		siwcBind:           siwcBind,
 		pluginCommandLine:  pluginHost.HasTriggeredCommandLineFlags(),
-		login:              login,
 		antigravityLogin:   antigravityLogin,
 		githubCopilotLogin: githubCopilotLogin,
 		codeBuddyLogin:     codeBuddyLogin,
@@ -823,6 +770,7 @@ func run() (exitStatus int) {
 		kiroImport:         kiroImport,
 		kiroIDCLogin:       kiroIDCLogin,
 		xaiLogin:           xaiLogin,
+		copilotLogin:       copilotLogin,
 		devinLogin:         devinLogin,
 		metaLogin:          metaLogin,
 		qoderLogin:         qoderLogin,
@@ -881,9 +829,6 @@ func run() (exitStatus int) {
 	if vertexImport != "" {
 		// Handle Vertex service account import
 		cmd.DoVertexImport(cfg, vertexImport, vertexImportPrefix)
-	} else if login {
-		// Handle Google/Gemini login.
-		cmd.DoLogin(cfg, projectID, options)
 	} else if siwcBind != "" {
 		// Handle Sign in with ChatGPT (SIWC) credential binding
 		cmd.DoSIWCBind(cfg, siwcBind, options)
@@ -982,6 +927,8 @@ func run() (exitStatus int) {
 		cmd.DoKiroIDCLogin(cfg, options, kiroIDCStartURL, kiroIDCRegion, kiroIDCFlow)
 	} else if xaiLogin {
 		cmd.DoXAILogin(cfg, options)
+	} else if copilotLogin {
+		cmd.DoCopilotLogin(cfg, options)
 	} else if devinLogin {
 		cmd.DoDevinLogin(cfg, options)
 	} else if metaLogin {
@@ -1002,7 +949,6 @@ func run() (exitStatus int) {
 			if standalone {
 				// Standalone mode: start an embedded local server and connect TUI client to it.
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
-				misc.StartAntigravityVersionUpdater(context.Background())
 				registry.SetLocalModelCatalogs(localModel)
 				hook := tui.NewLogHook(2000)
 				hook.SetFormatter(&logging.LogFormatter{})
@@ -1095,7 +1041,6 @@ func run() (exitStatus int) {
 		} else {
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
-			misc.StartAntigravityVersionUpdater(context.Background())
 			registry.SetLocalModelCatalogs(localModel)
 			if cfg.AuthDir != "" {
 				kiro.InitRateLimiterConfig(cfg)
@@ -1136,20 +1081,6 @@ func resolveManagementBaseURL(flagURL string, cfg *config.Config) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
-// persistSeededConfig persists a config file freshly copied from the template. The file
-// is first rewritten as the startup load would, so a plaintext management secret never
-// reaches the remote store. When that fails, the copy is removed and an error returned,
-// so every start refuses the template instead of running from an unpersisted config.
-func persistSeededConfig(ctx context.Context, configFilePath string, persist func(context.Context) error) error {
-	if errPrepare := config.PrepareConfigFileForUpload(configFilePath); errPrepare != nil {
-		if errRemove := os.Remove(configFilePath); errRemove != nil {
-			log.WithError(errRemove).Warn("failed to remove the config copied from the template")
-		}
-		return fmt.Errorf("prepare config for upload: %w", errPrepare)
-	}
-	return persist(ctx)
-}
-
 func pluginBootstrapConfigPath(args []string, defaultPath string) string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -1182,7 +1113,7 @@ func defaultPluginBootstrapConfigPath(defaultPath string) string {
 }
 
 func loadPluginBootstrapConfig(path string) *config.Config {
-	raw, errReadFile := os.ReadFile(path)
+	raw, errReadFile := config.ReadConfigFile(path)
 	if errReadFile != nil {
 		if !errors.Is(errReadFile, os.ErrNotExist) {
 			log.Warnf("failed to read plugin bootstrap config: %v", errReadFile)
@@ -1243,7 +1174,7 @@ func argvEnablesBoolFlag(args []string, name string) bool {
 func argvFlagConsumesValue(name string) bool {
 	switch name {
 	case "codex-login", "codex-device-login", "claude-login", "no-browser",
-		"antigravity-login", "kimi-login", "kimi-ai-login", "xai-login", "devin-login", "meta-login",
+		"antigravity-login", "kimi-login", "kimi-ai-login", "xai-login", "copilot-login", "devin-login", "meta-login",
 		"discover", "discover-json", "home-disable-cluster-discovery",
 		"tui", "standalone", "local-model":
 		return false

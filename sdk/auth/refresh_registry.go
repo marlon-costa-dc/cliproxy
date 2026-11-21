@@ -14,6 +14,7 @@ func init() {
 	registerRefreshLead("kimi-ai", func() Authenticator { return NewKimiAIAuthenticator() })
 	registerRefreshLead("kimi.ai", func() Authenticator { return NewKimiAIDotAuthenticator() })
 	registerRefreshLead("xai", func() Authenticator { return NewXAIAuthenticator() })
+	registerRefreshLead("copilot", func() Authenticator { return CopilotAuthenticator{} })
 	registerRefreshLead("kiro", func() Authenticator { return NewKiroAuthenticator() })
 	registerRefreshLead("github-copilot", func() Authenticator { return NewGitHubCopilotAuthenticator() })
 	registerRefreshLead("gitlab", func() Authenticator { return NewGitLabAuthenticator() })

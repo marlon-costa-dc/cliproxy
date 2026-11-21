@@ -111,6 +111,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	if !homeEnabled {
+		s.startCopilotCatalogRefresh(ctx)
 		tokenResult, err := s.tokenProvider.Load(ctx, cfg)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return err
@@ -313,6 +314,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if runCancel != nil {
 			runCancel()
 		}
+		s.cfgMu.RLock()
+		catalogs := s.copilotCatalogs
+		s.cfgMu.RUnlock()
+		if catalogs != nil {
+			catalogs.cancel()
+			select {
+			case <-catalogs.done:
+			case <-ctx.Done():
+				shutdownErr = ctx.Err()
+			}
+		}
 
 		s.homeLifecycleMu.Lock()
 		if supervisor := s.homeSupervisor; supervisor != nil {
@@ -480,6 +492,15 @@ func (s *Service) startModelCatalogUpdaters(ctx context.Context) {
 		proxyURL = cfg.ProxyURL
 	}
 	executor.StartXAIVersionUpdater(ctx, proxyURL)
+	sdkAuth.StartAntigravityVersionUpdaterWithProxyProvider(ctx, s.antigravityVersionProxyURL)
+}
+
+func (s *Service) antigravityVersionProxyURL() string {
+	cfg := s.currentConfig()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.ProxyURL
 }
 
 func notifyServiceReady(socket string) error {

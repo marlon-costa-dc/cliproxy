@@ -49,6 +49,16 @@ jobs:
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Build
-        run: go build ./cmd/server
+        run: |
+          go build -o test-output ./cmd/server
+          rm -f test-output
+      - name: Cross-build for Solaris
+        env:
+          GOOS: solaris
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          go build -o test-output-solaris ./cmd/server
+          rm -f test-output-solaris
       - name: Test
         run: go test ./...

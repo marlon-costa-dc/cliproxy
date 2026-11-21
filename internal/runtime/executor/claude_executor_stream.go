@@ -106,6 +106,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
 		rebuildMidSystemMessagesToTopLevelDoc(doc)
 	}
+	advisorState := e.stripForeignClaudeAdvisorBlocksDoc(ctx, auth, apiKey, doc)
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
@@ -182,7 +183,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		// Cloaking and ensureCacheControl may push the total over 4 when the client
 		// already sends multiple cache_control blocks.
 		enforceCacheControlLimitDoc(doc, 4)
-		stripPromptCacheOptionsDoc(doc)
 
 		// Native selects the 1h cache pool only for OAuth credentials and pairs it with
 		// extended-cache-ttl-2025-04-11, which claudeCodeCLIBetas emits on exactly the
@@ -209,8 +209,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if !explicitCacheMode {
 			normalizeCacheControlTTLDoc(doc)
 		}
-
 	}
+
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	var oauthToolNamesReverseMap map[string]string
@@ -246,6 +246,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	stripDefaultKimiClaudeCodeAttributionDoc(auth, url, fp.ProfileClaudeCodeCLI, doc)
 	applyClaudePreservedThinkingBindingDoc(doc)
+	// Keep built-in cleanup before the final user payload rules.
+	stripPromptCacheOptionsDoc(doc)
 	// User rules match the fully prepared business body and are applied only once.
 	touchedPayloadPaths := helps.ApplyPayloadConfigWithTrackedPathsDoc(
 		e.cfg, baseModel, to.String(), from.String(), "", doc, stripTranslatedDefaultMaxTokens(from, originalPayload, originalTranslated),
@@ -256,10 +258,10 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		diagnosticsState = claudeDiagnosticsRequestState{}
 	}
 	extraBetas, _ = extractAndRemoveBetasDoc(doc)
-	stripPromptCacheOptionsDoc(doc)
 	bodyForUpstream := doc.Bytes()
 	body = bodyForUpstream
 	bodyForTranslation := bodyForUpstream
+	advisorState.FilterUnknownIDsFromFinalBody(bodyForUpstream)
 	if cchSigning {
 		bodyForUpstream, err = signAnthropicMessagesBody(bodyForUpstream)
 		if err != nil {
@@ -438,6 +440,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					return
 				}
 				line = e.restoreResponseModel(restoredLine, req.Model)
+				advisorState.ObserveSSELine(line)
 				event.Write(line)
 				event.WriteByte('\n')
 				if len(bytes.TrimSpace(line)) == 0 {
@@ -510,6 +513,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				return
 			}
 			line = e.restoreResponseModel(restoredLine, req.Model)
+			advisorState.ObserveSSELine(line)
 			helps.RecordClaudeWebSearchResultsContext(ctx, webSearchSessionKey, line, webSearchTTL, webSearchLimit)
 			chunks := sdktranslator.TranslateStream(
 				ctx,
