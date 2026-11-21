@@ -202,7 +202,8 @@ retain the corresponding business operation's fields.
 
 The login URL is shared by all providers. Set the required `provider` query
 parameter to `claude`, `codex`, `antigravity`, `kimi`, `kimi-ai`, `xai`, `devin`,
-`meta`, or a registered plugin provider ID. For example:
+`meta`, `qoder`, `kilo`, `cursor`, `gitlab` (OAuth; pass `client_id`),
+`github` (alias `github-copilot`), or a registered plugin provider ID. For example:
 
 ```http
 GET /v8/management/oauth/auth-url?provider=codex
@@ -218,7 +219,9 @@ consumption; operators may explicitly opt in by passing `verify: true` (and opti
 `verify_model`) when starting the targeted login, or trigger verification explicitly
 after adoption via `POST /v8/management/credentials/verify` (`{"name":"<file>","model":"<optional-model>"}`).
 The login response includes the authorization URL and a session `state` (plus `target_auth_id`
-when targeted). Use that state for status queries and cancellation.
+when targeted). Device flows add `flow: "device"` and, when the provider issues
+them, `user_code` and `expires_in` (seconds). Use that state for status queries
+and cancellation; cancelling a session also stops its background poll.
 
 Callbacks accept `provider`, `state`, `code`, and `error` as GET query parameters
 or POST JSON fields. POST also accepts `redirect_url` containing the complete

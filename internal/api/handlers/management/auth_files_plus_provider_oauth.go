@@ -37,6 +37,33 @@ const (
 	kiroCallbackPort     = 9876
 )
 
+// oauthStartResponse builds the v8 login start shape shared with the built-in
+// providers: url and state, plus flow, user_code and expires_in for device flows.
+// A v8 targeted relogin binds its credential target to the session state.
+func oauthStartResponse(c *gin.Context, state, authURL, flow, userCode string, expiresIn int) gin.H {
+	response := gin.H{"status": "ok", "url": authURL, "state": state}
+	if flow != "" {
+		response["flow"] = flow
+	}
+	if userCode = strings.TrimSpace(userCode); userCode != "" {
+		response["user_code"] = userCode
+		response["verification_uri"] = authURL
+	}
+	if expiresIn > 0 {
+		response["expires_in"] = expiresIn
+	}
+	bindOAuthSessionTarget(c, state, response)
+	return response
+}
+
+// oauthPollContext stops a background login poll when its session is cancelled
+// or completed elsewhere.
+func oauthPollContext(parent context.Context, state, provider string) (context.Context, context.CancelFunc) {
+	pollCtx, cancel := context.WithCancel(parent)
+	go watchOAuthSessionCancel(pollCtx, cancel, state, provider)
+	return pollCtx, cancel
+}
+
 func (h *Handler) RequestCursorToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
@@ -53,12 +80,15 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 
 	state := fmt.Sprintf("cur-%d", time.Now().UnixNano())
 	RegisterOAuthSession(state, "cursor")
+	response := oauthStartResponse(c, state, authParams.LoginURL, "", "", 0)
 
 	go func() {
 		log.Info("Waiting for Cursor authentication...")
 		log.Infof("Open this URL in your browser: %s", authParams.LoginURL)
 
-		tokens, errPoll := cursorauth.PollForAuth(ctx, authParams.UUID, authParams.Verifier)
+		pollCtx, cancelPoll := oauthPollContext(ctx, state, "cursor")
+		defer cancelPoll()
+		tokens, errPoll := cursorauth.PollForAuth(pollCtx, authParams.UUID, authParams.Verifier)
 		if errPoll != nil {
 			SetOAuthSessionError(state, "Authentication failed: "+errPoll.Error())
 			log.Errorf("Cursor authentication failed: %v", errPoll)
@@ -110,11 +140,7 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("cursor")
 	}()
 
-	c.JSON(200, gin.H{
-		"status": "ok",
-		"url":    authParams.LoginURL,
-		"state":  state,
-	})
+	c.JSON(http.StatusOK, response)
 }
 func (h *Handler) RequestGitHubToken(c *gin.Context) {
 	ctx := context.Background()
@@ -138,11 +164,14 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 	userCode := deviceCode.UserCode
 
 	RegisterOAuthSession(state, "github-copilot")
+	response := oauthStartResponse(c, state, authURL, "device", userCode, deviceCode.ExpiresIn)
 
 	go func() {
 		fmt.Printf("Please visit %s and enter code: %s\n", authURL, userCode)
 
-		tokenData, errPoll := deviceClient.PollForToken(ctx, deviceCode)
+		pollCtx, cancelPoll := oauthPollContext(ctx, state, "github-copilot")
+		defer cancelPoll()
+		tokenData, errPoll := deviceClient.PollForToken(pollCtx, deviceCode)
 		if errPoll != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", errPoll)
@@ -206,13 +235,7 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("github-copilot")
 	}()
 
-	c.JSON(200, gin.H{
-		"status":           "ok",
-		"url":              authURL,
-		"state":            state,
-		"user_code":        userCode,
-		"verification_uri": authURL,
-	})
+	c.JSON(http.StatusOK, response)
 }
 
 func (h *Handler) RequestGitLabPATToken(c *gin.Context) {
@@ -469,7 +492,7 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("gitlab")
 	}()
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+	c.JSON(http.StatusOK, oauthStartResponse(c, state, authURL, "", "", 0))
 }
 
 func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
@@ -700,11 +723,14 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 	}
 
 	RegisterOAuthSession(state, "kilo")
+	response := oauthStartResponse(c, state, resp.VerificationURL, "device", resp.Code, resp.ExpiresIn)
 
 	go func() {
 		fmt.Printf("Please visit %s and enter code: %s\n", resp.VerificationURL, resp.Code)
 
-		status, err := kilocodeAuth.PollForToken(ctx, resp.Code)
+		pollCtx, cancelPoll := oauthPollContext(ctx, state, "kilo")
+		defer cancelPoll()
+		status, err := kilocodeAuth.PollForToken(pollCtx, resp.Code)
 		if err != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", err)
@@ -763,13 +789,7 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("kilo")
 	}()
 
-	c.JSON(200, gin.H{
-		"status":           "ok",
-		"url":              resp.VerificationURL,
-		"state":            state,
-		"user_code":        resp.Code,
-		"verification_uri": resp.VerificationURL,
-	})
+	c.JSON(http.StatusOK, response)
 }
 
 // RequestCursorToken initiates the Cursor PKCE authentication flow.
@@ -1081,10 +1101,13 @@ func (h *Handler) RequestQoderToken(c *gin.Context) {
 	}
 
 	RegisterOAuthSession(state, "qoder")
+	response := oauthStartResponse(c, state, deviceFlow.VerificationURIComplete, "device", "", 0)
 
 	go func() {
 		fmt.Println("Waiting for authentication...")
-		tokenData, errPollForToken := qoderAuth.PollForToken(ctx, deviceFlow)
+		pollCtx, cancelPoll := oauthPollContext(ctx, state, "qoder")
+		defer cancelPoll()
+		tokenData, errPollForToken := qoderAuth.PollForToken(pollCtx, deviceFlow)
 		if errPollForToken != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", errPollForToken)
@@ -1159,7 +1182,7 @@ func (h *Handler) RequestQoderToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("qoder")
 	}()
 
-	c.JSON(200, gin.H{"status": "ok", "url": deviceFlow.VerificationURIComplete, "state": state})
+	c.JSON(http.StatusOK, response)
 }
 
 func authFileExcludedModelsValue(value any) []string {
