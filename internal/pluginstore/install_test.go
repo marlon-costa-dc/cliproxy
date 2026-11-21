@@ -309,7 +309,7 @@ func TestInstallArchiveRejectsUnsafeArchives(t *testing.T) {
 }
 
 func TestInstallUsesLatestReleaseVersion(t *testing.T) {
-	t.Parallel()
+	clearAmbientGitHubToken(t)
 
 	root := t.TempDir()
 	archiveData := makeZip(t, map[string]string{"sample-provider.dylib": "library-data"})
@@ -433,6 +433,7 @@ func TestDownloadAssetUsesAPIURLWhenResolvedAuthMatchesArtifact(t *testing.T) {
 }
 
 func TestDownloadAssetUsesBrowserDownloadURLWithUnrelatedAuth(t *testing.T) {
+	clearAmbientGitHubToken(t)
 	t.Setenv("PLUGIN_STORE_TOKEN", "secret-token")
 	browserURL := "https://downloads.example/sample-provider.zip"
 	client := Client{
@@ -718,6 +719,15 @@ type failingHTTPDoer struct{}
 
 func (failingHTTPDoer) Do(*http.Request) (*http.Response, error) {
 	return nil, errors.New("network unavailable")
+}
+
+// clearAmbientGitHubToken isolates a test from the shared GitHub credential
+// that githubauth.ResolveToken reads from the process environment.
+func clearAmbientGitHubToken(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"GITHUB_TOKEN", "github_token", "GH_TOKEN", "GITSTORE_GIT_URL", "GITSTORE_GIT_TOKEN"} {
+		t.Setenv(name, "")
+	}
 }
 
 type mapHTTPDoer map[string][]byte

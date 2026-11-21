@@ -225,7 +225,7 @@ func TestGitHubRateLimitAuthenticatedBodyIsNotExposed(t *testing.T) {
 }
 
 func TestGitHubDefaultCooldownBlocksConcurrentNewClients(t *testing.T) {
-	t.Parallel()
+	clearAmbientGitHubToken(t)
 	var calls atomic.Int32
 	client := Client{NetworkScope: t.Name(), HTTPClient: pluginIdentityDoerFunc(func(*http.Request) (*http.Response, error) {
 		calls.Add(1)

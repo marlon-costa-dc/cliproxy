@@ -21,13 +21,33 @@ func nativeStoreGit(t *testing.T, dir string, args ...string) string {
 	if errLookup != nil {
 		t.Skip("native Git is required")
 	}
-	args = append([]string{"-C", dir, "-c", "user.name=Git Store Test", "-c", "user.email=git-store@example.test", "-c", "commit.gpgsign=false"}, args...)
+	args = append([]string{"-C", dir}, args...)
 	cmd := exec.Command(gitPath, args...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+nativeStoreGitConfig(t), "GIT_CONFIG_NOSYSTEM=1")
 	out, errRun := cmd.CombinedOutput()
 	if errRun != nil {
 		t.Fatalf("git %v: %v\n%s", args, errRun, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// nativeStoreGitConfig isolates native Git from the host configuration. The
+// receive-pack that a local push starts in the remote repository drops
+// command-line -c values but reads the global file, and without these settings
+// it starts detached auto-maintenance that can still be repacking the remote
+// when t.TempDir removes it.
+func nativeStoreGitConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gitconfig")
+	const contents = "[user]\n\tname = Git Store Test\n\temail = git-store@example.test\n" +
+		"[commit]\n\tgpgsign = false\n" +
+		"[maintenance]\n\tauto = false\n" +
+		"[gc]\n\tauto = 0\n" +
+		"[receive]\n\tautogc = false\n"
+	if errWrite := os.WriteFile(path, []byte(contents), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	return path
 }
 
 func gitWorkspacePair(t *testing.T) (string, *GitTokenStore, *GitTokenStore) {
