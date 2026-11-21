@@ -242,7 +242,7 @@ func (cfg *Config) Validate() error {
 			}
 		}
 	}
-	return nil
+	return cfg.validateLocalRoutes()
 }
 
 func (cfg *Config) validateFailurePolicy() error {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -15,23 +16,40 @@ func credentialRateLimitKey(authID string) string { return "credential:" + authI
 
 func routeRateLimitKey(selector string) string { return "route:" + selector }
 
-// routeRateLimit returns the published limit of the route a model-routing
-// request executes, keyed by its route selector.
-func (m *Manager) routeRateLimit(opts cliproxyexecutor.Options) (string, ratelimit.Config, bool) {
-	if m == nil || !isModelRoutingOptions(opts) {
-		return "", ratelimit.Config{}, false
-	}
-	selector, _ := opts.Metadata[routingSelectorMetadataKey].(string)
-	table := m.modelRouting.Load()
-	if selector == "" || table == nil {
-		return "", ratelimit.Config{}, false
-	}
-	limit, ok := table.rateLimits[selector]
-	return selector, limit, ok
+func localRouteRateLimitKey(name string) string { return "local-route:" + strings.ToLower(name) }
+
+type rateLimitScope struct {
+	key string
+	cfg ratelimit.Config
 }
 
-// acquireRateLimits admits one upstream request for the published route and
-// then for the credential, in that order, so concurrent requests never wait on
+// routingRateLimits returns the published limits a model-routing request runs
+// under: the local route it addressed, then the direct route it executes.
+func (m *Manager) routingRateLimits(opts cliproxyexecutor.Options) []rateLimitScope {
+	if m == nil || !isModelRoutingOptions(opts) {
+		return nil
+	}
+	table := m.modelRouting.Load()
+	if table == nil {
+		return nil
+	}
+	var scopes []rateLimitScope
+	if alias, _ := opts.Metadata[routingAliasMetadataKey].(string); alias != "" {
+		if limit, ok := table.aliasRateLimits[strings.ToLower(alias)]; ok {
+			scopes = append(scopes, rateLimitScope{key: localRouteRateLimitKey(alias), cfg: limit})
+		}
+	}
+	if selector, _ := opts.Metadata[routingSelectorMetadataKey].(string); selector != "" {
+		if limit, ok := table.rateLimits[selector]; ok {
+			scopes = append(scopes, rateLimitScope{key: routeRateLimitKey(selector), cfg: limit})
+		}
+	}
+	return scopes
+}
+
+// acquireRateLimits admits one upstream request for the published local route,
+// the direct route and then the credential, in that order, so concurrent
+// requests never wait on
 // each other's slots. Waiting queues the request; a reached daily cap of the
 // credential refuses only that credential for this request, while a reached
 // route cap ends the request. The returned function ends the request and
@@ -41,16 +59,9 @@ func (m *Manager) acquireRateLimits(ctx context.Context, auth *Auth, opts clipro
 	if m == nil || m.rateLimiter == nil || auth == nil {
 		return nil, nil
 	}
-	type scope struct {
-		key string
-		cfg ratelimit.Config
-	}
-	scopes := make([]scope, 0, 2)
-	if selector, limit, ok := m.routeRateLimit(opts); ok {
-		scopes = append(scopes, scope{key: routeRateLimitKey(selector), cfg: limit})
-	}
+	scopes := m.routingRateLimits(opts)
 	if auth.RateLimit != nil && auth.RateLimit.Active() {
-		scopes = append(scopes, scope{key: credentialRateLimitKey(auth.ID), cfg: *auth.RateLimit})
+		scopes = append(scopes, rateLimitScope{key: credentialRateLimitKey(auth.ID), cfg: *auth.RateLimit})
 	}
 	if len(scopes) == 0 {
 		return nil, nil

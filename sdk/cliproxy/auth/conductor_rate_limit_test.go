@@ -187,3 +187,48 @@ func TestModelRoutingRouteDailyCapFailsOverToNextRoute(t *testing.T) {
 		t.Fatalf("RouteRateLimitState() = %+v, %t", state, ok)
 	}
 }
+
+func TestModelRoutingLocalRouteDailyCapEndsRequestsAcrossItsRoutes(t *testing.T) {
+	first := &modelRoutingAttemptExecutor{identifier: "local-first-" + uuid.NewString()}
+	second := &modelRoutingAttemptExecutor{identifier: "local-second-" + uuid.NewString()}
+	runtime := newModelRoutingTestRuntime(t, first, second, 2)
+
+	projection := *runtime.projection
+	localName := "local-lane-" + uuid.NewString()
+	projection.LocalRoutes = []modelrouting.LocalRoute{{
+		Name:           localName,
+		RuntimeModelID: projection.DirectModels[0].Routes[0].RuntimeModelID,
+		RateLimit:      &ratelimit.Spec{DailyMaxRequests: 1},
+	}}
+	digest, errDigest := modelrouting.ProjectionDigest(&projection)
+	if errDigest != nil {
+		t.Fatal(errDigest)
+	}
+	projection.ProjectionDigest = digest
+	prepared, errPrepare := runtime.manager.PrepareModelRouting(&projection)
+	if errPrepare != nil {
+		t.Fatalf("PrepareModelRouting() error = %v", errPrepare)
+	}
+	if errActivate := runtime.manager.ActivatePreparedModelRouting(prepared); errActivate != nil {
+		t.Fatalf("ActivatePreparedModelRouting() error = %v", errActivate)
+	}
+
+	providers := []string{first.identifier, second.identifier}
+	request := cliproxyexecutor.Request{Model: localName, Payload: []byte(`{"messages":[]}`)}
+	if _, errExecute := runtime.manager.Execute(context.Background(), providers, request, modelRoutingOptions()); errExecute != nil {
+		t.Fatalf("first local-route Execute() error = %v", errExecute)
+	}
+	_, errExecute := runtime.manager.Execute(context.Background(), providers, request, modelRoutingOptions())
+	var routeErr *Error
+	if !errors.As(errExecute, &routeErr) || routeErr.Code != "route_rate_limited" || routeErr.HTTPStatus != http.StatusTooManyRequests {
+		t.Fatalf("second local-route Execute() error = %v, want route_rate_limited 429", errExecute)
+	}
+	if got := first.executeCalls.Load() + second.executeCalls.Load(); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (the local route's daily cap spans every route it serves)", got)
+	}
+	// The direct alias does not share the local route's limit.
+	if _, errAlias := runtime.manager.Execute(context.Background(), providers,
+		cliproxyexecutor.Request{Model: runtime.requestedModel, Payload: []byte(`{"messages":[]}`)}, modelRoutingOptions()); errAlias != nil {
+		t.Fatalf("alias Execute() error = %v, want it unaffected by the local route cap", errAlias)
+	}
+}

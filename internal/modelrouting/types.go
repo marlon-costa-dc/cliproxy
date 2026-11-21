@@ -21,6 +21,9 @@ type Config struct {
 	Aliases          []Alias       `yaml:"aliases" json:"aliases"`
 	DirectModels     []DirectModel `yaml:"direct-models" json:"direct-models"`
 	FailurePolicy    FailurePolicy `yaml:"failure-policy" json:"failure-policy"`
+	// LocalRoutes are consumer routes to locally served runtime models; AI Hub
+	// omits the list when it publishes none.
+	LocalRoutes []LocalRoute `yaml:"local-routes,omitempty" json:"local-routes,omitempty"`
 }
 
 // ModelKey identifies one canonical catalog model. A route provider is deliberately
