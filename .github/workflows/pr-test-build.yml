@@ -46,6 +46,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Test
+        run: go test ./...
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Build
@@ -60,5 +62,3 @@ jobs:
         run: |
           go build -o test-output-solaris ./cmd/server
           rm -f test-output-solaris
-      - name: Test
-        run: go test ./...
