@@ -362,7 +362,18 @@ extensions retain their declared `/v0/management` routes.
 Configure Zen and Go credentials in `api-keys.opencode` and
 `api-keys.opencode-go`, respectively, using the same grouped key layout as
 other v8 providers. The gateway supplies the default base URL when omitted.
-Client access keys remain under `access.api-keys`.
+Client access keys remain under `access.api-keys`. A key may declare
+`quota-domain` (as on every Codex-style key family) to name its quota pool;
+omitted, it draws from the provider pool `opencode` or `opencode-go`.
+
+Config keys are not credential files, so `GET /credentials` does not list them.
+`GET /observability/usage/api-keys` reports each key, grouped by provider and
+keyed by `base_url|api_key`, with a `state` object: the routing inventory's
+credential view of the whole key (`credential_ref`, `quota_domain`, `health`,
+`quota` with `status`, `remaining` and `resets_at`, and `suspension` with a
+local `reason` such as `cooldown` or `disabled` and its `resumes_at`). Provider
+error text is never included. `/v0/management/api-key-usage` keeps its original
+payload without `state`.
 
 ## DataCosmos routing publication
 

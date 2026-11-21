@@ -1522,3 +1522,46 @@ api-keys:
 		t.Fatal("declared quota domains were not preserved")
 	}
 }
+
+func TestV8OpenCodeKeysPreserveDeclaredQuotaDomains(t *testing.T) {
+	cfg, err := config.ParseConfigBytes([]byte(`config-version: 8
+api-keys:
+  opencode:
+    - name: zen
+      keys:
+        - api-key: fixture-zen-a
+          quota-domain: " zen-team "
+        - api-key: fixture-zen-b
+  opencode-go:
+    - name: go
+      keys:
+        - api-key: fixture-go
+          quota-domain: go-team
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auths, err := NewConfigSynthesizer().Synthesize(&SynthesisContext{
+		Config: cfg, Now: time.Now(), IDGenerator: NewStableIDGenerator(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]string, len(auths))
+	for _, auth := range auths {
+		got[auth.Attributes["api_key"]] = auth.Provider + "/" + auth.RoutingQuotaDomain()
+	}
+	want := map[string]string{
+		"fixture-zen-a": "opencode/zen-team",
+		"fixture-zen-b": "opencode/opencode",
+		"fixture-go":    "opencode-go/go-team",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("quota domains = %v, want %v", got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("quota domains = %v, want %v", got, want)
+		}
+	}
+}

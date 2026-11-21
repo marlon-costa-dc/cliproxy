@@ -4,11 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -146,5 +149,102 @@ func TestGetAPIKeyUsage_GroupsOpenAICompatibleByCompatName(t *testing.T) {
 	vastEntry := vastBucket["https://www.vastnum.com/v1|vast-key"]
 	if vastEntry.Success != 1 || vastEntry.Failed != 0 {
 		t.Fatalf("vast totals = %d/%d, want 1/0", vastEntry.Success, vastEntry.Failed)
+	}
+}
+
+func TestGetAPIKeyUsageV8ReportsOpenCodeKeyRuntimeState(t *testing.T) {
+	now := time.Now()
+	providerText := "upstream said: account abc123 is throttled"
+	manager := coreauth.NewManager(nil, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID: "opencode-healthy", Provider: "opencode", QuotaDomain: "zen-team",
+			Attributes: map[string]string{"api_key": "zen-healthy"},
+		},
+		{
+			ID: "opencode-cooldown", Provider: "opencode",
+			Attributes:  map[string]string{"api_key": "zen-cooldown"},
+			Unavailable: true, NextRetryAfter: now.Add(5 * time.Minute),
+			StatusMessage: providerText, LastError: &coreauth.Error{Message: providerText, HTTPStatus: http.StatusServiceUnavailable},
+		},
+		{
+			ID: "opencode-go-quota", Provider: "opencode-go",
+			Attributes: map[string]string{"api_key": "go-quota"},
+			Quota:      coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: now.Add(10 * time.Minute)},
+		},
+		{
+			ID: "opencode-go-disabled", Provider: "opencode-go", Disabled: true, Status: coreauth.StatusDisabled,
+			Attributes: map[string]string{"api_key": "go-disabled"},
+		},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register %s: %v", auth.ID, errRegister)
+		}
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	router := gin.New()
+	router.GET("/v8/management/observability/usage/api-keys", func(c *gin.Context) {
+		c.Set(ConfigV8ContextKey, true)
+		h.GetAPIKeyUsage(c)
+	})
+	router.GET("/v0/management/api-key-usage", h.GetAPIKeyUsage)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v8/management/observability/usage/api-keys", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "abc123") || strings.Contains(rec.Body.String(), "throttled") {
+		t.Fatalf("provider error text crossed the management boundary: %s", rec.Body.String())
+	}
+	var payload map[string]map[string]apiKeyUsageEntry
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &payload); errDecode != nil {
+		t.Fatalf("decode payload: %v", errDecode)
+	}
+	state := func(provider, key string) *modelrouting.InventoryCredential {
+		t.Helper()
+		entry, ok := payload[provider]["|"+key]
+		if !ok || entry.State == nil {
+			t.Fatalf("missing %s state for %s: %v", provider, key, payload)
+		}
+		return entry.State
+	}
+
+	healthy := state("opencode", "zen-healthy")
+	if !healthy.Health.Selectable || healthy.Suspension.Active || healthy.Quota.Status != "available" || healthy.QuotaDomain != "zen-team" {
+		t.Fatalf("healthy state = %+v", healthy)
+	}
+	if healthy.CredentialRef.ID != coreauth.CredentialReferenceID("opencode-healthy") || healthy.CredentialRef.Kind != "api_key" {
+		t.Fatalf("healthy credential ref = %+v", healthy.CredentialRef)
+	}
+
+	cooldown := state("opencode", "zen-cooldown")
+	if cooldown.Health.Selectable || !cooldown.Suspension.Active || cooldown.Suspension.Reason == nil || *cooldown.Suspension.Reason != "cooldown" {
+		t.Fatalf("cooldown state = %+v", cooldown)
+	}
+	if cooldown.Suspension.ResumesAt == nil || *cooldown.Suspension.ResumesAt != now.Add(5*time.Minute).UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("cooldown resume instant = %v", cooldown.Suspension.ResumesAt)
+	}
+	if cooldown.QuotaDomain != "opencode" {
+		t.Fatalf("cooldown quota domain = %q, want provider pool", cooldown.QuotaDomain)
+	}
+
+	quota := state("opencode-go", "go-quota")
+	if quota.Health.Selectable || quota.Suspension.Active || quota.Quota.Status != "blocked" || quota.Quota.ResetsAt == nil {
+		t.Fatalf("quota state = %+v", quota)
+	}
+	if *quota.Quota.ResetsAt != now.Add(10*time.Minute).UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("quota resets_at = %s", *quota.Quota.ResetsAt)
+	}
+
+	disabled := state("opencode-go", "go-disabled")
+	if disabled.Health.Selectable || disabled.Suspension.Reason == nil || *disabled.Suspension.Reason != "disabled" {
+		t.Fatalf("disabled state = %+v", disabled)
+	}
+
+	legacy := httptest.NewRecorder()
+	router.ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/v0/management/api-key-usage", nil))
+	if legacy.Code != http.StatusOK || strings.Contains(legacy.Body.String(), `"state"`) {
+		t.Fatalf("v0 payload changed: status=%d body=%s", legacy.Code, legacy.Body.String())
 	}
 }

@@ -356,6 +356,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		a := &coreauth.Auth{
 			ID:                  id,
 			Provider:            provider,
+			QuotaDomain:         entry.QuotaDomain,
 			Label:               provider + "-apikey",
 			Prefix:              prefix,
 			Status:              coreauth.StatusActive,

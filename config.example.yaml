@@ -1016,6 +1016,15 @@ upstream:
 #         - api-key: "..."
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #
+#   # OpenCode Zen and Go gateway keys
+#   # base-url defaults to the gateway endpoint. The same layout applies to opencode-go.
+#
+#   opencode:
+#     - name: zen-1
+#       keys:
+#         - api-key: "..."
+#           quota-domain: "zen-team" # optional: quota pool shared by keys with the same value; omitted means "opencode"
+#
 #   # OpenAI compatibility providers
 #
 #   openai-compatibility:

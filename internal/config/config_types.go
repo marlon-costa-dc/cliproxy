@@ -998,6 +998,10 @@ type CodexKey struct {
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gpt-5-codex").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
+	// QuotaDomain identifies the quota pool for this exact credential. Omitted
+	// means the provider's pool (for example "opencode" or "opencode-go").
+	QuotaDomain string `yaml:"quota-domain,omitempty" json:"quota-domain,omitempty"`
+
 	// BaseURL is the base URL for the Codex API endpoint.
 	// If empty, the default Codex API URL will be used.
 	BaseURL string `yaml:"base-url" json:"base-url"`

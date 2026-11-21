@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -13,6 +15,20 @@ type apiKeyUsageEntry struct {
 	Success        int64                          `json:"success"`
 	Failed         int64                          `json:"failed"`
 	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests"`
+	// State is the v8 runtime state of the key: cooldown or suspension with its
+	// resume instant, quota facts and quota domain, without provider error text.
+	State *modelrouting.InventoryCredential `json:"state,omitempty"`
+}
+
+// apiKeyUsageState reports a key with the routing inventory's credential
+// decision, evaluated for the whole credential rather than one model.
+func apiKeyUsageState(auth *coreauth.Auth, now time.Time) *modelrouting.InventoryCredential {
+	route := registry.RegisteredRouteSnapshot{ClientID: auth.ID}
+	if auth.Disabled || auth.Status == coreauth.StatusDisabled {
+		route.SuspensionReason = "disabled"
+	}
+	state := routingInventoryCredential(route, auth, auth.RoutingQuotaDomain(), now)
+	return &state
 }
 
 func mergeRecentRequestBuckets(dst, src []coreauth.RecentRequestBucket) []coreauth.RecentRequestBucket {
@@ -70,6 +86,7 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 	}
 
 	now := time.Now()
+	withState := c.GetBool(ConfigV8ContextKey)
 	out := make(map[string]map[string]apiKeyUsageEntry)
 	for _, auth := range manager.List() {
 		if auth == nil {
@@ -94,6 +111,10 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 		provider := apiKeyUsageProviderKey(auth)
 
 		recent := auth.RecentRequestsSnapshot(now)
+		var state *modelrouting.InventoryCredential
+		if withState {
+			state = apiKeyUsageState(auth, now)
+		}
 		providerBucket, ok := out[provider]
 		if !ok {
 			providerBucket = make(map[string]apiKeyUsageEntry)
@@ -103,6 +124,10 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 			existing.Success += auth.Success
 			existing.Failed += auth.Failed
 			existing.RecentRequests = mergeRecentRequestBuckets(existing.RecentRequests, recent)
+			// Registrations sharing one key report the most restrictive state.
+			if state != nil && existing.State != nil && existing.State.Health.Selectable && !state.Health.Selectable {
+				existing.State = state
+			}
 			providerBucket[compositeKey] = existing
 			continue
 		}
@@ -110,6 +135,7 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 			Success:        auth.Success,
 			Failed:         auth.Failed,
 			RecentRequests: recent,
+			State:          state,
 		}
 	}
 

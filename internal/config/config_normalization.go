@@ -408,6 +408,7 @@ func sanitizeMetaKeyEntries(entries []MetaKey) []MetaKey {
 			continue
 		}
 		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.QuotaDomain = strings.TrimSpace(e.QuotaDomain)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		if e.BaseURL == "" {
 			e.BaseURL = "https://api.meta.ai/v1"
@@ -428,6 +429,7 @@ func normalizeCodexKeyEntries(entries []CodexKey, dropEmptyBaseURL bool) []Codex
 	for i := range entries {
 		e := entries[i]
 		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.QuotaDomain = strings.TrimSpace(e.QuotaDomain)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
