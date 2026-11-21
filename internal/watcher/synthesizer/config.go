@@ -189,6 +189,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			UpdatedAt:  now,
 
 			ProxyConnectionPool: authProxyConnectionPool(entry.ConnectionPool),
+			RateLimit:           authRateLimit(entry.RateLimit),
 		}
 		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
@@ -266,6 +267,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			UpdatedAt:  now,
 
 			ProxyConnectionPool: authProxyConnectionPool(ck.ConnectionPool),
+			RateLimit:           authRateLimit(ck.RateLimit),
 		}
 		ApplyAuthExcludedModelsMeta(a, ck.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
@@ -366,6 +368,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			CreatedAt:           now,
 			UpdatedAt:           now,
 			ProxyConnectionPool: authProxyConnectionPool(entry.ConnectionPool),
+			RateLimit:           authRateLimit(entry.RateLimit),
 		}
 		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
@@ -447,6 +450,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				CreatedAt:           now,
 				UpdatedAt:           now,
 				ProxyConnectionPool: authProxyConnectionPool(openAICompatConnectionPool(compat, entry)),
+				RateLimit:           authRateLimit(entry.RateLimit),
 			}
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil
@@ -569,6 +573,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			UpdatedAt:  now,
 
 			ProxyConnectionPool: authProxyConnectionPool(compat.ConnectionPool),
+			RateLimit:           authRateLimit(compat.RateLimit),
 		}
 		ApplyAuthExcludedModelsMeta(a, compat.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {

@@ -375,6 +375,41 @@ local `reason` such as `cooldown` or `disabled` and its `resumes_at`). Provider
 error text is never included. `/v0/management/api-key-usage` keeps its original
 payload without `state`.
 
+## Local rate limits
+
+Any key entry of an `api-keys` family (gemini, interactions, vertex, codex,
+claude, xai, meta, opencode, opencode-go and openai-compatibility keys) and any
+published `model-routing` direct route accepts a `rate-limit` block. Omitted
+fields apply no limit; durations use Go syntax (`500ms`, `2s`).
+
+| Field | Meaning |
+| --- | --- |
+| `min-interval` | Minimum spacing between two request starts. |
+| `max-interval` | Randomizes the spacing up to this value (default `min-interval`). |
+| `jitter-percent` | Varies each spacing by up to this fraction (0 to 1). |
+| `daily-max-requests` | Caps request starts per UTC day. |
+| `max-concurrency` | Requests in flight; further requests queue instead of failing (`1` serializes). |
+| `backoff-base` | Pause after the first consecutive upstream failure. |
+| `backoff-max` | Caps the failure pause. |
+| `backoff-multiplier` | Pause growth per consecutive failure (default 2). |
+
+The auth conductor admits each inference request (non-streaming and
+streaming) before it reaches the upstream: first through the limit of the
+published route it executes, then through the limit of the selected
+credential. A streaming request keeps its slot until the stream ends. A key at
+its daily cap is skipped for that request (another credential may serve it;
+with none left the request fails with `429` and `Retry-After`); a route at its
+daily cap fails with `429 route_rate_limited`, which the routing failure policy
+may classify for failover. Invalid blocks are rejected at config load and at
+routing publication. `kiro-rate-limit` runs on the same limiter.
+
+The routing inventory adds `rate_limit` to each route and credential that
+configures one, and the v8 API-key usage `state` carries the key's
+`rate_limit`: the configured `min_interval_ms`, `max_interval_ms`,
+`daily_max_requests` and `max_concurrency`, plus `in_flight`, `waiting`,
+`daily_requests`, `daily_resets_at`, `next_allowed_at`, `cooldown_until` and
+`fail_count`.
+
 ## DataCosmos routing publication
 
 For OpenAI-compatible accounts, a per-key `quota-domain` in

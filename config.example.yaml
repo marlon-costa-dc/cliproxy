@@ -1024,6 +1024,17 @@ upstream:
 #       keys:
 #         - api-key: "..."
 #           quota-domain: "zen-team" # optional: quota pool shared by keys with the same value; omitted means "opencode"
+#           # optional: local pacing for this key; accepted on a key entry of every api-keys family.
+#           # Omitted fields apply no limit. Durations use Go syntax ("500ms", "2s", "5m").
+#           rate-limit:
+#             min-interval: "1s"        # minimum spacing between two request starts
+#             max-interval: "2s"        # randomize the spacing up to this value (default min-interval)
+#             jitter-percent: 0.2       # vary each spacing by up to this fraction (0 to 1)
+#             daily-max-requests: 500   # cap request starts per UTC day; capped keys are skipped until reset
+#             max-concurrency: 1        # requests in flight; extra requests queue instead of failing
+#             backoff-base: "30s"       # pause after the first consecutive upstream failure
+#             backoff-max: "5m"         # cap for the failure pause
+#             backoff-multiplier: 2     # pause growth per consecutive failure (default 2)
 #
 #   # OpenAI compatibility providers
 #
@@ -1524,7 +1535,9 @@ plugins:
 #    proxy-url: "socks5://proxy.example.com:1080" # optional: proxy override
 
 # Kiro rate limiter configuration
-# Controls request throttling and backoff behavior for Kiro tokens.
+# Controls request throttling and backoff behavior for Kiro tokens. It runs on
+# the same provider-neutral limiter as api-keys key `rate-limit` blocks; the
+# daily cap is reported for Kiro tokens but does not block a request.
 # All fields are optional; omitted fields fall back to defaults shown below.
 #kiro-rate-limit:
 #  enabled: true                # set to true to enable rate limiting (default: false)

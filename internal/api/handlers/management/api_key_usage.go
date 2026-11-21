@@ -22,12 +22,15 @@ type apiKeyUsageEntry struct {
 
 // apiKeyUsageState reports a key with the routing inventory's credential
 // decision, evaluated for the whole credential rather than one model.
-func apiKeyUsageState(auth *coreauth.Auth, now time.Time) *modelrouting.InventoryCredential {
+func apiKeyUsageState(manager *coreauth.Manager, auth *coreauth.Auth, now time.Time) *modelrouting.InventoryCredential {
 	route := registry.RegisteredRouteSnapshot{ClientID: auth.ID}
 	if auth.Disabled || auth.Status == coreauth.StatusDisabled {
 		route.SuspensionReason = "disabled"
 	}
 	state := routingInventoryCredential(route, auth, auth.RoutingQuotaDomain(), now)
+	if limit, ok := manager.CredentialRateLimitState(auth); ok {
+		state.RateLimit = inventoryRateLimit(limit, now)
+	}
 	return &state
 }
 
@@ -113,7 +116,7 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 		recent := auth.RecentRequestsSnapshot(now)
 		var state *modelrouting.InventoryCredential
 		if withState {
-			state = apiKeyUsageState(auth, now)
+			state = apiKeyUsageState(manager, auth, now)
 		}
 		providerBucket, ok := out[provider]
 		if !ok {

@@ -11,6 +11,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -193,6 +194,7 @@ type resultPolicyHolder struct {
 type Manager struct {
 	modelRouting              modelRoutingPointer
 	inFlightTracker           *inFlightTracker
+	rateLimiter               *ratelimit.Limiter
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
@@ -288,6 +290,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	}
 	manager := &Manager{
 		inFlightTracker:       newInFlightTracker(),
+		rateLimiter:           ratelimit.New(),
 		store:                 store,
 		authLoadGate:          semaphore.NewWeighted(math.MaxInt64),
 		executors:             make(map[string]ProviderExecutor),

@@ -926,7 +926,19 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			cancelCurrentAttempt()
 			return nil, errCredential
 		}
+		releaseRateLimits, errRateLimit := m.acquireRateLimits(attemptCtx, auth, execOpts)
+		if errRateLimit != nil {
+			cancelCurrentAttempt()
+			return nil, errRateLimit
+		}
 		streamResult, errStream := executor.ExecuteStream(attemptCtx, auth, execReq, execOpts)
+		if releaseRateLimits != nil {
+			if errStream != nil {
+				releaseRateLimits(errStream)
+			} else {
+				streamResult = releaseRateLimitsWhenStreamEnds(ctx, streamResult, releaseRateLimits)
+			}
+		}
 		syncActiveAuth()
 		errStream = markUpstreamExecutionAttemptFromContext(attemptCtx, errStream)
 		durationStream := time.Since(startStream)

@@ -154,6 +154,22 @@ type InventoryRoute struct {
 	Selectable             bool                   `json:"selectable"`
 	SelectionReason        string                 `json:"selection_reason"`
 	Credentials            []InventoryCredential  `json:"credentials"`
+	RateLimit              *InventoryRateLimit    `json:"rate_limit,omitempty"`
+}
+
+// InventoryRateLimit is the live state of a configured local rate limit.
+type InventoryRateLimit struct {
+	MinIntervalMS    int64   `json:"min_interval_ms,omitempty"`
+	MaxIntervalMS    int64   `json:"max_interval_ms,omitempty"`
+	DailyMaxRequests int     `json:"daily_max_requests,omitempty"`
+	MaxConcurrency   int     `json:"max_concurrency,omitempty"`
+	InFlight         int     `json:"in_flight"`
+	Waiting          int     `json:"waiting"`
+	DailyRequests    int     `json:"daily_requests"`
+	DailyResetsAt    *string `json:"daily_resets_at"`
+	NextAllowedAt    *string `json:"next_allowed_at"`
+	CooldownUntil    *string `json:"cooldown_until"`
+	FailCount        int     `json:"fail_count"`
 }
 
 type InventoryRestriction struct {
@@ -183,6 +199,7 @@ type InventoryCredential struct {
 	Quota         InventoryQuota         `json:"quota"`
 	Suspension    InventorySuspension    `json:"suspension"`
 	Restrictions  []InventoryRestriction `json:"restrictions"`
+	RateLimit     *InventoryRateLimit    `json:"rate_limit,omitempty"`
 }
 
 type InventoryQuota struct {

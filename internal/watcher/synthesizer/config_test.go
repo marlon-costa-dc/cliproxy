@@ -8,6 +8,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 )
 
 func TestNewConfigSynthesizer(t *testing.T) {
@@ -1520,6 +1521,54 @@ api-keys:
 	if len(auths) != 2 || auths[0].RoutingQuotaDomain() != "shared-pool" ||
 		auths[1].RoutingQuotaDomain() != "separate-pool" {
 		t.Fatal("declared quota domains were not preserved")
+	}
+}
+
+func TestV8KeyRateLimitsReachCredentials(t *testing.T) {
+	cfg, err := config.ParseConfigBytes([]byte(`config-version: 8
+api-keys:
+  opencode:
+    - name: zen
+      keys:
+        - api-key: fixture-limited
+          rate-limit:
+            min-interval: 2s
+            max-interval: 3s
+            daily-max-requests: 50
+            max-concurrency: 1
+            jitter-percent: 0.1
+            backoff-base: 30s
+            backoff-max: 5m
+            backoff-multiplier: 1.5
+        - api-key: fixture-open
+  openai-compatibility:
+    - name: gateway
+      base-url: https://example.invalid
+      keys:
+        - api-key: fixture-compat
+          rate-limit:
+            max-concurrency: 2
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auths, err := NewConfigSynthesizer().Synthesize(&SynthesisContext{Config: cfg, Now: time.Now(), IDGenerator: NewStableIDGenerator()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := make(map[string]*coreauth.Auth, len(auths))
+	for _, auth := range auths {
+		byKey[auth.Attributes["api_key"]] = auth
+	}
+	want := ratelimit.Config{MinInterval: 2 * time.Second, MaxInterval: 3 * time.Second, DailyMaxRequests: 50, MaxConcurrency: 1, JitterPercent: 0.1, BackoffBase: 30 * time.Second, BackoffMax: 5 * time.Minute, BackoffMultiplier: 1.5}
+	if got := byKey["fixture-limited"].RateLimit; got == nil || *got != want {
+		t.Fatalf("limited key rate limit = %+v, want %+v", got, want)
+	}
+	if got := byKey["fixture-open"].RateLimit; got != nil {
+		t.Fatalf("key without rate-limit got %+v", got)
+	}
+	if got := byKey["fixture-compat"].RateLimit; got == nil || got.MaxConcurrency != 2 {
+		t.Fatalf("compat key rate limit = %+v", got)
 	}
 }
 

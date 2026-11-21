@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 	"gopkg.in/yaml.v3"
 )
 
@@ -839,6 +840,9 @@ type ClaudeKey struct {
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
 
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
+
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/claude-sonnet-4").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
@@ -995,6 +999,9 @@ type CodexKey struct {
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
 
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
+
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gpt-5-codex").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
@@ -1128,6 +1135,9 @@ type GeminiKey struct {
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -1273,6 +1283,9 @@ type OpenAICompatibilityAPIKey struct {
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`

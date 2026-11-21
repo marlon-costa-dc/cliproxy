@@ -4,6 +4,8 @@
 // executes it, but never re-ranks candidates or invents catalog facts.
 package modelrouting
 
+import "github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
+
 const (
 	ProtocolOpenAIChat        = "openai_chat"
 	ProtocolOpenAIResponses   = "openai_responses"
@@ -118,6 +120,9 @@ type DirectRoute struct {
 	Pricing                *Pricing        `yaml:"pricing" json:"pricing"`
 	Selectable             bool            `yaml:"selectable" json:"selectable"`
 	SelectionReason        string          `yaml:"selection-reason" json:"selection-reason"`
+	// RateLimit paces every request executed through this route, whichever
+	// alias or direct selector reached it. Omitted applies no route limit.
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 }
 
 // Restriction explains a config-owned eligibility decision.

@@ -22,6 +22,7 @@ import (
 	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/copilot"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 )
 
 // PostAuthHook defines a function that is called after an Auth record is created
@@ -98,6 +99,8 @@ type Auth struct {
 	// credential. Nil means no pooling, which is the default. Pools are per
 	// credential, so an override here never shares connections with another auth.
 	ProxyConnectionPool *ProxyConnectionPoolOverride `json:"proxy_connection_pool,omitempty"`
+	// RateLimit paces requests sent with this credential; nil applies no limit.
+	RateLimit *ratelimit.Config `json:"rate_limit,omitempty"`
 	// Attributes stores provider specific metadata needed by executors (immutable configuration).
 	Attributes map[string]string `json:"attributes,omitempty"`
 	// Metadata stores runtime mutable provider state (e.g. tokens, cookies).
@@ -546,6 +549,10 @@ func (a *Auth) Clone() *Auth {
 	}
 	if a.ProxyConnectionPool != nil {
 		copyAuth.ProxyConnectionPool = a.ProxyConnectionPool.Clone()
+	}
+	if a.RateLimit != nil {
+		rateLimit := *a.RateLimit
+		copyAuth.RateLimit = &rateLimit
 	}
 	if a.OpenAICompatibilityIndex != nil {
 		index := *a.OpenAICompatibilityIndex

@@ -453,6 +453,9 @@ func validateRoute(path string, parent ModelKey, route DirectRoute) error {
 	if err := validateOptionalPricing(path+".pricing", route.Pricing); err != nil {
 		return err
 	}
+	if _, err := route.RateLimit.Config(); err != nil {
+		return fmt.Errorf("%s.rate-limit.%w", path, err)
+	}
 	if route.Selectable && !route.Health.Selectable {
 		return fmt.Errorf("%s.selectable: route cannot be selectable while health is not selectable", path)
 	}

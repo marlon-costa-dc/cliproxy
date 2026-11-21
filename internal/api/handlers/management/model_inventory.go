@@ -60,6 +60,7 @@ func BuildRoutingInventory(manager *coreauth.Manager, activeState modelrouting.A
 		inventory.DirectModels = mergeRegistryRoutes(projectedInventoryModels(projection, registered, auths, now), registryModels)
 		inventory.Aliases = projectedInventoryAliases(projection)
 	}
+	annotateInventoryRateLimits(&inventory, manager, auths, now)
 	return inventory, nil
 }
 

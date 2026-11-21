@@ -1,12 +1,12 @@
 package kiro
 
 import (
-	"math"
-	"math/rand"
+	"context"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -34,29 +34,26 @@ type TokenState struct {
 	SuspendReason  string
 }
 
-// RateLimiter throttles Kiro requests and tracks token health.
+type tokenSuspension struct {
+	at     time.Time
+	reason string
+}
+
+// RateLimiter maps kiro-rate-limit onto the provider-neutral limiter and adds
+// Kiro's suspension detection.
 type RateLimiter struct {
-	mu                sync.RWMutex
-	states            map[string]*TokenState
-	enabled           bool
-	minTokenInterval  time.Duration
-	maxTokenInterval  time.Duration
-	dailyMaxRequests  int
-	jitterPercent     float64
-	backoffBase       time.Duration
-	backoffMax        time.Duration
-	backoffMultiplier float64
-	suspendCooldown   time.Duration
-	rng               *rand.Rand
+	mu              sync.RWMutex
+	enabled         bool
+	cfg             ratelimit.Config
+	suspendCooldown time.Duration
+	limiter         *ratelimit.Limiter
+	suspensions     map[string]tokenSuspension
 }
 
 // NewRateLimiter creates a rate limiter with default settings.
 func NewRateLimiter() *RateLimiter {
-	rl := &RateLimiter{
-		states: make(map[string]*TokenState),
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
-	}
-	rl.resetConfigLocked()
+	rl := &RateLimiter{limiter: ratelimit.New(), suspensions: make(map[string]tokenSuspension)}
+	rl.applyConfigLocked(RateLimiterConfig{})
 	return rl
 }
 
@@ -87,180 +84,101 @@ func (rl *RateLimiter) ApplyConfig(cfg RateLimiterConfig) {
 	rl.applyConfigLocked(cfg)
 }
 
-func (rl *RateLimiter) resetConfigLocked() {
-	rl.enabled = false
-	rl.minTokenInterval = DefaultMinTokenInterval
-	rl.maxTokenInterval = DefaultMaxTokenInterval
-	rl.dailyMaxRequests = DefaultDailyMaxRequests
-	rl.jitterPercent = DefaultJitterPercent
-	rl.backoffBase = DefaultBackoffBase
-	rl.backoffMax = DefaultBackoffMax
-	rl.backoffMultiplier = DefaultBackoffMultiplier
-	rl.suspendCooldown = DefaultSuspendCooldown
-}
-
 func (rl *RateLimiter) applyConfigLocked(cfg RateLimiterConfig) {
-	rl.resetConfigLocked()
-	if cfg.Enabled != nil {
-		rl.enabled = *cfg.Enabled
-	}
-	if cfg.MinTokenInterval > 0 {
-		rl.minTokenInterval = cfg.MinTokenInterval
-	}
-	if cfg.MaxTokenInterval > 0 {
-		rl.maxTokenInterval = cfg.MaxTokenInterval
+	rl.enabled = cfg.Enabled != nil && *cfg.Enabled
+	rl.cfg = ratelimit.Config{
+		MinInterval:       positiveOr(cfg.MinTokenInterval, DefaultMinTokenInterval),
+		MaxInterval:       positiveOr(cfg.MaxTokenInterval, DefaultMaxTokenInterval),
+		DailyMaxRequests:  DefaultDailyMaxRequests,
+		JitterPercent:     DefaultJitterPercent,
+		BackoffBase:       positiveOr(cfg.BackoffBase, DefaultBackoffBase),
+		BackoffMax:        positiveOr(cfg.BackoffMax, DefaultBackoffMax),
+		BackoffMultiplier: DefaultBackoffMultiplier,
 	}
 	if cfg.DailyMaxRequests > 0 {
-		rl.dailyMaxRequests = cfg.DailyMaxRequests
+		rl.cfg.DailyMaxRequests = cfg.DailyMaxRequests
 	}
 	if cfg.JitterPercent > 0 {
-		rl.jitterPercent = cfg.JitterPercent
-	}
-	if cfg.BackoffBase > 0 {
-		rl.backoffBase = cfg.BackoffBase
-	}
-	if cfg.BackoffMax > 0 {
-		rl.backoffMax = cfg.BackoffMax
+		rl.cfg.JitterPercent = cfg.JitterPercent
 	}
 	if cfg.BackoffMultiplier > 0 {
-		rl.backoffMultiplier = cfg.BackoffMultiplier
+		rl.cfg.BackoffMultiplier = cfg.BackoffMultiplier
 	}
-	if cfg.SuspendCooldown > 0 {
-		rl.suspendCooldown = cfg.SuspendCooldown
-	}
-
-	// Validate interval bounds: max must be > min to avoid rand.Int63n panic.
-	if rl.maxTokenInterval <= rl.minTokenInterval {
+	rl.suspendCooldown = positiveOr(cfg.SuspendCooldown, DefaultSuspendCooldown)
+	if rl.cfg.MaxInterval <= rl.cfg.MinInterval {
 		log.Warnf("kiro: rate limiter max-token-interval (%v) <= min-token-interval (%v), clamping max to min+1s",
-			rl.maxTokenInterval, rl.minTokenInterval)
-		rl.maxTokenInterval = rl.minTokenInterval + time.Second
+			rl.cfg.MaxInterval, rl.cfg.MinInterval)
+		rl.cfg.MaxInterval = rl.cfg.MinInterval + time.Second
 	}
 }
 
-// getOrCreateState returns the existing token state or creates one.
-func (rl *RateLimiter) getOrCreateState(tokenKey string) *TokenState {
-	state, exists := rl.states[tokenKey]
-	if !exists {
-		state = &TokenState{
-			DailyResetTime: time.Now().Truncate(24 * time.Hour).Add(24 * time.Hour),
-		}
-		rl.states[tokenKey] = state
+func positiveOr(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
 	}
-	return state
+	return fallback
 }
 
-// resetDailyIfNeeded resets the daily counter when the window rolls over.
-func (rl *RateLimiter) resetDailyIfNeeded(state *TokenState) {
-	now := time.Now()
-	if now.After(state.DailyResetTime) {
-		state.DailyRequests = 0
-		state.DailyResetTime = now.Truncate(24 * time.Hour).Add(24 * time.Hour)
-	}
+func (rl *RateLimiter) settings() (bool, ratelimit.Config, time.Duration) {
+	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+	return rl.enabled, rl.cfg, rl.suspendCooldown
 }
 
-// calculateInterval returns a randomized interval with jitter applied.
-func (rl *RateLimiter) calculateInterval() time.Duration {
-	baseInterval := rl.minTokenInterval + time.Duration(rl.rng.Int63n(int64(rl.maxTokenInterval-rl.minTokenInterval)))
-	jitter := time.Duration(float64(baseInterval) * rl.jitterPercent * (rl.rng.Float64()*2 - 1))
-	return baseInterval + jitter
-}
-
-// WaitForToken blocks until the token is allowed to send another request.
+// WaitForToken blocks until the token is allowed to send another request. The
+// daily cap is reported by IsTokenAvailable and never blocks the request.
 func (rl *RateLimiter) WaitForToken(tokenKey string) {
-	if !rl.enabled {
+	enabled, cfg, _ := rl.settings()
+	if !enabled {
 		return
 	}
-
-	rl.mu.Lock()
-	state := rl.getOrCreateState(tokenKey)
-	rl.resetDailyIfNeeded(state)
-
-	now := time.Now()
-
-	// Wait until the cooldown window ends.
-	if now.Before(state.CooldownEnd) {
-		waitTime := state.CooldownEnd.Sub(now)
-		rl.mu.Unlock()
-		time.Sleep(waitTime)
-		rl.mu.Lock()
-		state = rl.getOrCreateState(tokenKey)
-		now = time.Now()
+	pacing := cfg
+	pacing.DailyMaxRequests = 0
+	release, errAcquire := rl.limiter.Acquire(context.Background(), tokenKey, pacing)
+	if errAcquire == nil {
+		release()
 	}
-
-	// Respect the randomized spacing since the last request.
-	interval := rl.calculateInterval()
-	nextAllowedTime := state.LastRequest.Add(interval)
-
-	if now.Before(nextAllowedTime) {
-		waitTime := nextAllowedTime.Sub(now)
-		rl.mu.Unlock()
-		time.Sleep(waitTime)
-		rl.mu.Lock()
-		state = rl.getOrCreateState(tokenKey)
-	}
-
-	state.LastRequest = time.Now()
-	state.RequestCount++
-	state.DailyRequests++
-	rl.mu.Unlock()
 }
 
 // MarkTokenFailed records a failed request for a token.
 func (rl *RateLimiter) MarkTokenFailed(tokenKey string) {
-	if !rl.enabled {
-		return
+	if enabled, cfg, _ := rl.settings(); enabled {
+		rl.limiter.MarkFailure(tokenKey, cfg)
 	}
-
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	state := rl.getOrCreateState(tokenKey)
-	state.FailCount++
-	state.CooldownEnd = time.Now().Add(rl.calculateBackoff(state.FailCount))
 }
 
 // MarkTokenSuccess clears any failure state after a successful request.
 func (rl *RateLimiter) MarkTokenSuccess(tokenKey string) {
-	if !rl.enabled {
-		return
+	if enabled, _, _ := rl.settings(); enabled {
+		rl.limiter.MarkSuccess(tokenKey)
 	}
+}
 
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	state := rl.getOrCreateState(tokenKey)
-	state.FailCount = 0
-	state.CooldownEnd = time.Time{}
+var suspendKeywords = []string{
+	"suspended",
+	"banned",
+	"disabled",
+	"account has been",
+	"access denied",
+	"rate limit exceeded",
+	"too many requests",
+	"quota exceeded",
 }
 
 // CheckAndMarkSuspended detects suspension-like errors and records them.
 func (rl *RateLimiter) CheckAndMarkSuspended(tokenKey string, errorMsg string) bool {
-	if !rl.enabled {
+	enabled, _, suspendCooldown := rl.settings()
+	if !enabled {
 		return false
 	}
-
-	suspendKeywords := []string{
-		"suspended",
-		"banned",
-		"disabled",
-		"account has been",
-		"access denied",
-		"rate limit exceeded",
-		"too many requests",
-		"quota exceeded",
-	}
-
 	lowerMsg := strings.ToLower(errorMsg)
 	for _, keyword := range suspendKeywords {
 		if strings.Contains(lowerMsg, keyword) {
+			now := time.Now()
 			rl.mu.Lock()
-			defer rl.mu.Unlock()
-
-			state := rl.getOrCreateState(tokenKey)
-			state.IsSuspended = true
-			state.SuspendedAt = time.Now()
-			state.SuspendReason = errorMsg
-			state.CooldownEnd = time.Now().Add(rl.suspendCooldown)
+			rl.suspensions[tokenKey] = tokenSuspension{at: now, reason: errorMsg}
+			rl.mu.Unlock()
+			rl.limiter.CoolDown(tokenKey, now.Add(suspendCooldown))
 			return true
 		}
 	}
@@ -269,100 +187,55 @@ func (rl *RateLimiter) CheckAndMarkSuspended(tokenKey string, errorMsg string) b
 
 // IsTokenAvailable reports whether the token can currently be used.
 func (rl *RateLimiter) IsTokenAvailable(tokenKey string) bool {
-	if !rl.enabled {
+	enabled, cfg, suspendCooldown := rl.settings()
+	if !enabled {
 		return true
 	}
-
 	rl.mu.RLock()
-	defer rl.mu.RUnlock()
-
-	state, exists := rl.states[tokenKey]
-	if !exists {
-		return true
-	}
-
-	now := time.Now()
-
-	// Suspended tokens stay unavailable until their suspension window expires.
-	if state.IsSuspended {
-		if now.After(state.SuspendedAt.Add(rl.suspendCooldown)) {
-			return true
-		}
-		return false
-	}
-
-	// Cooldown blocks reuse after failures.
-	if now.Before(state.CooldownEnd) {
-		return false
-	}
-
-	// Enforce the per-day cap after refreshing the rolling window.
+	suspension, suspended := rl.suspensions[tokenKey]
 	rl.mu.RUnlock()
-	rl.mu.Lock()
-	rl.resetDailyIfNeeded(state)
-	dailyRequests := state.DailyRequests
-	dailyMax := rl.dailyMaxRequests
-	rl.mu.Unlock()
-	rl.mu.RLock()
-
-	if dailyRequests >= dailyMax {
-		return false
+	if suspended {
+		// Suspended tokens stay unavailable until their suspension window expires.
+		return time.Now().After(suspension.at.Add(suspendCooldown))
 	}
-
-	return true
+	return rl.limiter.Available(tokenKey, cfg)
 }
 
-// calculateBackoff returns the exponential backoff for a failure count.
-func (rl *RateLimiter) calculateBackoff(failCount int) time.Duration {
-	if failCount <= 0 {
-		return 0
-	}
-
-	backoff := float64(rl.backoffBase) * math.Pow(rl.backoffMultiplier, float64(failCount-1))
-
-	// Add jitter so clients do not retry in lockstep.
-	jitter := backoff * rl.jitterPercent * (rl.rng.Float64()*2 - 1)
-	backoff += jitter
-
-	if time.Duration(backoff) > rl.backoffMax {
-		return rl.backoffMax
-	}
-	return time.Duration(backoff)
-}
-
-// GetTokenState returns a defensive copy of the token state.
+// GetTokenState returns a copy of the token state, or nil for an unknown token.
 func (rl *RateLimiter) GetTokenState(tokenKey string) *TokenState {
+	_, cfg, _ := rl.settings()
+	state, known := rl.limiter.Snapshot(tokenKey, cfg)
 	rl.mu.RLock()
-	defer rl.mu.RUnlock()
-
-	state, exists := rl.states[tokenKey]
-	if !exists {
+	suspension, suspended := rl.suspensions[tokenKey]
+	rl.mu.RUnlock()
+	if !known && !suspended {
 		return nil
 	}
-
-	// Return a copy so callers cannot mutate internal state.
-	stateCopy := *state
-	return &stateCopy
+	return &TokenState{
+		LastRequest:    state.LastRequestAt,
+		RequestCount:   int(state.TotalRequests),
+		CooldownEnd:    state.CooldownUntil,
+		FailCount:      state.FailCount,
+		DailyRequests:  state.DailyRequests,
+		DailyResetTime: state.DailyResetAt,
+		IsSuspended:    suspended,
+		SuspendedAt:    suspension.at,
+		SuspendReason:  suspension.reason,
+	}
 }
 
 // ClearTokenState removes all tracked state for a token.
 func (rl *RateLimiter) ClearTokenState(tokenKey string) {
 	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	delete(rl.states, tokenKey)
+	delete(rl.suspensions, tokenKey)
+	rl.mu.Unlock()
+	rl.limiter.Forget(tokenKey)
 }
 
 // ResetSuspension clears a token's suspension and cooldown markers.
 func (rl *RateLimiter) ResetSuspension(tokenKey string) {
 	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	state, exists := rl.states[tokenKey]
-	if exists {
-		state.IsSuspended = false
-		state.SuspendedAt = time.Time{}
-		state.SuspendReason = ""
-		state.CooldownEnd = time.Time{}
-		state.FailCount = 0
-	}
+	delete(rl.suspensions, tokenKey)
+	rl.mu.Unlock()
+	rl.limiter.MarkSuccess(tokenKey)
 }

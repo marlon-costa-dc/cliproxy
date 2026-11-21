@@ -1563,7 +1563,19 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errCredential := m.checkRoutingExecutionCredential(execOpts, auth); errCredential != nil {
 				return cliproxyexecutor.Response{}, errCredential
 			}
+			releaseRateLimits, errRateLimit := m.acquireRateLimits(execCtx, auth, execOpts)
+			if errRateLimit != nil {
+				if isCredentialTerminatedError(errRateLimit) {
+					recordRequestRefusedAuth(ctx, auth.ID)
+					authErr = errRateLimit
+					break
+				}
+				return cliproxyexecutor.Response{}, errRateLimit
+			}
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			if releaseRateLimits != nil {
+				releaseRateLimits(errExec)
+			}
 			syncActiveAuth()
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
