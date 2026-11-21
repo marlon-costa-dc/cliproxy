@@ -418,13 +418,7 @@ func (s *oauthSessionStore) IsPending(state, provider string) bool {
 }
 
 func isOAuthSessionPendingStatus(session oauthSession) bool {
-	if session.Status == "" {
-		return true
-	}
-	if !strings.EqualFold(session.Provider, "kiro") {
-		return false
-	}
-	return strings.HasPrefix(session.Status, "device_code|") || strings.HasPrefix(session.Status, "auth_url|")
+	return session.Status == ""
 }
 
 // BeginSave atomically claims a pending OAuth session for credential

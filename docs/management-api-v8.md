@@ -203,7 +203,8 @@ retain the corresponding business operation's fields.
 The login URL is shared by all providers. Set the required `provider` query
 parameter to `claude`, `codex`, `antigravity`, `kimi`, `kimi-ai`, `xai`, `devin`,
 `meta`, `qoder`, `kilo`, `cursor`, `gitlab` (OAuth; pass `client_id`),
-`github` (alias `github-copilot`), or a registered plugin provider ID. For example:
+`github` (alias `github-copilot`), `kiro` (`method=aws` device flow by default,
+or `method=google`/`method=github`), or a registered plugin provider ID. For example:
 
 ```http
 GET /v8/management/oauth/auth-url?provider=codex

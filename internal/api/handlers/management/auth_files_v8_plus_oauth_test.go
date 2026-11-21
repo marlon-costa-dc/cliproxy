@@ -28,6 +28,10 @@ func stubPlusProviderOAuthTransport(t *testing.T) {
 			_, _ = rec.WriteString(`{"device_code":"gh-device","user_code":"GH-1234","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}`)
 		case req.URL.Host == "api.kilo.ai" && req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/device-auth/codes"):
 			_, _ = rec.WriteString(`{"code":"KILO-5678","verificationUrl":"https://app.kilo.ai/device","expiresIn":600}`)
+		case req.URL.Host == "oidc.us-east-1.amazonaws.com" && req.URL.Path == "/client/register":
+			_, _ = rec.WriteString(`{"clientId":"kiro-client","clientSecret":"kiro-secret"}`)
+		case req.URL.Host == "oidc.us-east-1.amazonaws.com" && req.URL.Path == "/device_authorization":
+			_, _ = rec.WriteString(`{"deviceCode":"kiro-device","userCode":"KIRO-ABCD","verificationUri":"https://view.awsapps.com/start","verificationUriComplete":"https://view.awsapps.com/start?user_code=KIRO-ABCD","expiresIn":600,"interval":30}`)
 		default:
 			rec.WriteHeader(http.StatusBadRequest)
 			_, _ = rec.WriteString(`{"error":"access_denied"}`)
@@ -140,5 +144,62 @@ func TestStartOAuthV8PlusProviderBindsTargetedRelogin(t *testing.T) {
 	target, ok := GetOAuthSessionTarget(resp["state"].(string))
 	if !ok || target.AuthID != fileName || !target.VerifyAfterLogin {
 		t.Fatalf("session target = (%+v, %t)", target, ok)
+	}
+}
+
+func TestStartOAuthV8KiroReturnsLoginURLAndUserCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stubPlusProviderOAuthTransport(t)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir(), Port: 8317}, coreauth.NewManager(nil, nil, nil))
+	router := gin.New()
+	router.GET("/v8/management/oauth/auth-url", h.StartOAuthV8)
+	router.GET("/v8/management/oauth/status", h.GetAuthStatus)
+
+	for _, tc := range []struct {
+		query     string
+		method    string
+		urlPrefix string
+		flow      string
+		userCode  string
+		expiresIn float64
+	}{
+		{query: "provider=kiro", method: "device_code", urlPrefix: "https://view.awsapps.com/start?user_code=KIRO-ABCD", flow: "device", userCode: "KIRO-ABCD", expiresIn: 600},
+		{query: "provider=kiro&method=builder-id", method: "device_code", urlPrefix: "https://view.awsapps.com/start?user_code=KIRO-ABCD", flow: "device", userCode: "KIRO-ABCD", expiresIn: 600},
+		{query: "provider=kiro&method=google", method: "social", urlPrefix: "https://prod.us-east-1.auth.desktop.kiro.dev/login?idp=Google&"},
+		{query: "provider=kiro&method=github", method: "social", urlPrefix: "https://prod.us-east-1.auth.desktop.kiro.dev/login?idp=Github&"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			resp := startOAuthV8ForTest(t, router, http.MethodGet, "/v8/management/oauth/auth-url?"+tc.query, "")
+			state := resp["state"].(string)
+			authURL, _ := resp["url"].(string)
+			if !strings.HasPrefix(authURL, tc.urlPrefix) {
+				t.Fatalf("url = %q, want prefix %q", authURL, tc.urlPrefix)
+			}
+			if tc.method == "social" && !strings.Contains(authURL, "state="+state) {
+				t.Fatalf("social url %q does not carry state %q", authURL, state)
+			}
+			if got, _ := resp["method"].(string); got != tc.method {
+				t.Fatalf("method = %q, want %q", got, tc.method)
+			}
+			if got, _ := resp["flow"].(string); got != tc.flow {
+				t.Fatalf("flow = %q, want %q", got, tc.flow)
+			}
+			if got, _ := resp["user_code"].(string); got != tc.userCode {
+				t.Fatalf("user_code = %q, want %q", got, tc.userCode)
+			}
+			if got, _ := resp["expires_in"].(float64); got != tc.expiresIn {
+				t.Fatalf("expires_in = %v, want %v", got, tc.expiresIn)
+			}
+
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v8/management/oauth/status?state="+state, nil))
+			if got := strings.TrimSpace(rec.Body.String()); got != `{"status":"wait"}` {
+				t.Fatalf("pending kiro status = %s, want wait", got)
+			}
+			if !CancelOAuthSession(state) {
+				t.Fatal("pending kiro session was not cancellable")
+			}
+		})
 	}
 }

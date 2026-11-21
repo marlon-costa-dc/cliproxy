@@ -303,33 +303,6 @@ func TestBeginOAuthSessionSaveRejectsCancelledCompletedErroredAndMismatchedSessi
 	}
 }
 
-func TestOAuthSessionStoreKiroPresentationStatusesRemainCancellableAndSaveable(t *testing.T) {
-	for _, status := range []string{
-		"device_code|https://example.test/verify|ABCD-EFGH",
-		"auth_url|https://example.test/oauth",
-	} {
-		cancelStore := newOAuthSessionStore(time.Minute)
-		cancelStore.Register("kiro-cancel", "kiro")
-		cancelStore.SetError("kiro-cancel", status)
-		if !cancelStore.IsPending("kiro-cancel", "kiro") {
-			t.Fatalf("Kiro status %q should remain pending", status)
-		}
-		if !cancelStore.Cancel("kiro-cancel") {
-			t.Fatalf("Cancel() = false for Kiro status %q, want true", status)
-		}
-
-		saveStore := newOAuthSessionStore(time.Minute)
-		saveStore.Register("kiro-save", "kiro")
-		saveStore.SetError("kiro-save", status)
-		if errBegin := saveStore.BeginSave("kiro-save", "kiro"); errBegin != nil {
-			t.Fatalf("BeginSave() error = %v for Kiro status %q, want nil", errBegin, status)
-		}
-		if saveStore.Cancel("kiro-save") {
-			t.Fatalf("Cancel() = true after Kiro save began for status %q, want false", status)
-		}
-	}
-}
-
 func TestOAuthSessionStoreCancelAndSaveHaveOneWinner(t *testing.T) {
 	for iteration := 0; iteration < 100; iteration++ {
 		store := newOAuthSessionStore(time.Minute)
