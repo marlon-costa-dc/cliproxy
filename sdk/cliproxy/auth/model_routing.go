@@ -21,6 +21,7 @@ import (
 	thinkingcodex "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/codex"
 	thinkingopenai "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/openai"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
@@ -70,6 +71,12 @@ type modelRoutingTable struct {
 	variants         map[string]map[string]modelrouting.Variant
 	failurePolicy    modelrouting.FailurePolicy
 	projectionDigest string
+	// rateLimits holds each published route's limit by route selector.
+	rateLimits map[string]ratelimit.Config
+	// localRoutes serves each published local route by its lower-case name;
+	// aliasRateLimits holds the limit of each such alias.
+	localRoutes     map[string]modelrouting.LocalRoute
+	aliasRateLimits map[string]ratelimit.Config
 }
 
 // RoutingCandidate is one immutable option in the already-ranked candidate chain.
@@ -294,9 +301,20 @@ func compileModelRouting(projection *modelrouting.Config) *modelRoutingTable {
 		declaredAliases: make(map[string]struct{}),
 		routes:          make(map[string]RoutingCandidate),
 		variants:        make(map[string]map[string]modelrouting.Variant),
+		rateLimits:      make(map[string]ratelimit.Config),
+		localRoutes:     make(map[string]modelrouting.LocalRoute),
+		aliasRateLimits: make(map[string]ratelimit.Config),
 	}
 	if projection == nil {
 		return table
+	}
+	for _, local := range projection.LocalRoutes {
+		key := strings.ToLower(local.Name)
+		table.declaredAliases[key] = struct{}{}
+		table.localRoutes[key] = local
+		if limit, errLimit := local.RateLimit.Config(); errLimit == nil && limit.Active() {
+			table.aliasRateLimits[key] = limit
+		}
 	}
 	table.failurePolicy = cloneRoutingFailurePolicy(projection.FailurePolicy)
 	table.projectionDigest = projection.ProjectionDigest
@@ -308,6 +326,10 @@ func compileModelRouting(projection *modelrouting.Config) *modelRoutingTable {
 		}
 		table.variants[modelID] = variants
 		for _, route := range model.Routes {
+			// The projection was validated at publication, so its limit parses.
+			if limit, errLimit := route.RateLimit.Config(); errLimit == nil && limit.Active() {
+				table.rateLimits[route.RouteSelector] = limit
+			}
 			if !model.Active || !route.Selectable || !route.Health.Selectable {
 				continue
 			}
@@ -473,6 +495,12 @@ func (m *Manager) modelRoutingCandidates(requestedModel string, opts cliproxyexe
 	key := strings.ToLower(requestedModel)
 	if candidates, exists := table.aliases[key]; exists {
 		return cloneRoutingCandidates(candidates), true, nil
+	}
+	if local, exists := table.localRoutes[key]; exists {
+		candidates, errLocal := m.localRouteCandidates(local)
+		if errLocal != nil || len(candidates) > 0 {
+			return candidates, true, errLocal
+		}
 	}
 	// The projection owns only the aliases it declares. A declared alias with
 	// no selectable member stops its own consumers; any other model name is not

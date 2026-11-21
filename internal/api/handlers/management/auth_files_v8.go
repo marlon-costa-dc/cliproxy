@@ -2,7 +2,6 @@ package management
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
@@ -419,6 +419,18 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 		h.RequestDevinToken(c)
 	case "meta":
 		h.RequestMetaToken(c)
+	case "qoder":
+		h.RequestQoderToken(c)
+	case "kilo":
+		h.RequestKiloToken(c)
+	case "cursor":
+		h.RequestCursorToken(c)
+	case "gitlab":
+		h.RequestGitLabToken(c)
+	case "github", "github-copilot":
+		h.RequestGitHubToken(c)
+	case "kiro":
+		h.RequestKiroToken(c)
 	default:
 		if !h.ServePluginAuthURL(c) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "provider_not_found"})

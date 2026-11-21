@@ -1,7 +1,6 @@
 package management
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,18 +16,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/copilot"
 	cursorauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/cursor"
-	geminiAuth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/gemini"
 	gitlabauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/gitlab"
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/iflow"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kilo"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
 	qoderauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/qoder"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -36,12 +32,37 @@ import (
 )
 
 const (
-	geminiCLIEndpoint    = "https://cloudcode-pa.googleapis.com"
-	geminiCLIVersion     = "v1internal"
 	gitLabLoginModeOAuth = "oauth"
 	gitLabLoginModePAT   = "pat"
 	kiroCallbackPort     = 9876
 )
+
+// oauthStartResponse builds the v8 login start shape shared with the built-in
+// providers: url and state, plus flow, user_code and expires_in for device flows.
+// A v8 targeted relogin binds its credential target to the session state.
+func oauthStartResponse(c *gin.Context, state, authURL, flow, userCode string, expiresIn int) gin.H {
+	response := gin.H{"status": "ok", "url": authURL, "state": state}
+	if flow != "" {
+		response["flow"] = flow
+	}
+	if userCode = strings.TrimSpace(userCode); userCode != "" {
+		response["user_code"] = userCode
+		response["verification_uri"] = authURL
+	}
+	if expiresIn > 0 {
+		response["expires_in"] = expiresIn
+	}
+	bindOAuthSessionTarget(c, state, response)
+	return response
+}
+
+// oauthPollContext stops a background login poll when its session is cancelled
+// or completed elsewhere.
+func oauthPollContext(parent context.Context, state, provider string) (context.Context, context.CancelFunc) {
+	pollCtx, cancel := context.WithCancel(parent)
+	go watchOAuthSessionCancel(pollCtx, cancel, state, provider)
+	return pollCtx, cancel
+}
 
 func (h *Handler) RequestCursorToken(c *gin.Context) {
 	ctx := context.Background()
@@ -59,12 +80,15 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 
 	state := fmt.Sprintf("cur-%d", time.Now().UnixNano())
 	RegisterOAuthSession(state, "cursor")
+	response := oauthStartResponse(c, state, authParams.LoginURL, "", "", 0)
 
 	go func() {
 		log.Info("Waiting for Cursor authentication...")
 		log.Infof("Open this URL in your browser: %s", authParams.LoginURL)
 
-		tokens, errPoll := cursorauth.PollForAuth(ctx, authParams.UUID, authParams.Verifier)
+		pollCtx, cancelPoll := oauthPollContext(ctx, state, "cursor")
+		defer cancelPoll()
+		tokens, errPoll := cursorauth.PollForAuth(pollCtx, authParams.UUID, authParams.Verifier)
 		if errPoll != nil {
 			SetOAuthSessionError(state, "Authentication failed: "+errPoll.Error())
 			log.Errorf("Cursor authentication failed: %v", errPoll)
@@ -116,11 +140,7 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("cursor")
 	}()
 
-	c.JSON(200, gin.H{
-		"status": "ok",
-		"url":    authParams.LoginURL,
-		"state":  state,
-	})
+	c.JSON(http.StatusOK, response)
 }
 func (h *Handler) RequestGitHubToken(c *gin.Context) {
 	ctx := context.Background()
@@ -144,11 +164,14 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 	userCode := deviceCode.UserCode
 
 	RegisterOAuthSession(state, "github-copilot")
+	response := oauthStartResponse(c, state, authURL, "device", userCode, deviceCode.ExpiresIn)
 
 	go func() {
 		fmt.Printf("Please visit %s and enter code: %s\n", authURL, userCode)
 
-		tokenData, errPoll := deviceClient.PollForToken(ctx, deviceCode)
+		pollCtx, cancelPoll := oauthPollContext(ctx, state, "github-copilot")
+		defer cancelPoll()
+		tokenData, errPoll := deviceClient.PollForToken(pollCtx, deviceCode)
 		if errPoll != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", errPoll)
@@ -212,13 +235,7 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("github-copilot")
 	}()
 
-	c.JSON(200, gin.H{
-		"status":           "ok",
-		"url":              authURL,
-		"state":            state,
-		"user_code":        userCode,
-		"verification_uri": authURL,
-	})
+	c.JSON(http.StatusOK, response)
 }
 
 func (h *Handler) RequestGitLabPATToken(c *gin.Context) {
@@ -475,7 +492,7 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("gitlab")
 	}()
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+	c.JSON(http.StatusOK, oauthStartResponse(c, state, authURL, "", "", 0))
 }
 
 func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
@@ -571,12 +588,6 @@ func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
 		"expired":    tokenStorage.Expire,
 		"type":       tokenStorage.Type,
 	})
-}
-
-type projectSelectionRequiredError struct{}
-
-func (e *projectSelectionRequiredError) Error() string {
-	return "gemini cli: project selection required"
 }
 
 func (h *Handler) RequestIFlowToken(c *gin.Context) {
@@ -712,11 +723,14 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 	}
 
 	RegisterOAuthSession(state, "kilo")
+	response := oauthStartResponse(c, state, resp.VerificationURL, "device", resp.Code, resp.ExpiresIn)
 
 	go func() {
 		fmt.Printf("Please visit %s and enter code: %s\n", resp.VerificationURL, resp.Code)
 
-		status, err := kilocodeAuth.PollForToken(ctx, resp.Code)
+		pollCtx, cancelPoll := oauthPollContext(ctx, state, "kilo")
+		defer cancelPoll()
+		status, err := kilocodeAuth.PollForToken(pollCtx, resp.Code)
 		if err != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", err)
@@ -775,13 +789,7 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("kilo")
 	}()
 
-	c.JSON(200, gin.H{
-		"status":           "ok",
-		"url":              resp.VerificationURL,
-		"state":            state,
-		"user_code":        resp.Code,
-		"verification_uri": resp.VerificationURL,
-	})
+	c.JSON(http.StatusOK, response)
 }
 
 // RequestCursorToken initiates the Cursor PKCE authentication flow.
@@ -803,35 +811,35 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 
 	switch method {
 	case "aws", "builder-id":
+		// AWS Builder ID uses the device code flow (no callback needed). The
+		// device authorization runs before responding so the start response
+		// carries the verification URL and user code.
+		ssoClient := kiroauth.NewSSOOIDCClient(h.cfg)
+		regResp, errRegister := ssoClient.RegisterClient(ctx)
+		if errRegister != nil {
+			log.Errorf("Failed to register client: %v", errRegister)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register client"})
+			return
+		}
+		authResp, errAuth := ssoClient.StartDeviceAuthorization(ctx, regResp.ClientID, regResp.ClientSecret)
+		if errAuth != nil {
+			log.Errorf("Failed to start device auth: %v", errAuth)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start device authorization"})
+			return
+		}
+		authURL := strings.TrimSpace(authResp.VerificationURIComplete)
+		if authURL == "" {
+			authURL = strings.TrimSpace(authResp.VerificationURI)
+		}
+
 		RegisterOAuthSession(state, "kiro")
+		response := oauthStartResponse(c, state, authURL, "device", authResp.UserCode, authResp.ExpiresIn)
+		response["method"] = "device_code"
 
-		// AWS Builder ID uses device code flow (no callback needed)
 		go func() {
-			ssoClient := kiroauth.NewSSOOIDCClient(h.cfg)
+			pollCtx, cancelPoll := oauthPollContext(ctx, state, "kiro")
+			defer cancelPoll()
 
-			// Step 1: Register client
-			fmt.Println("Registering client...")
-			regResp, errRegister := ssoClient.RegisterClient(ctx)
-			if errRegister != nil {
-				log.Errorf("Failed to register client: %v", errRegister)
-				SetOAuthSessionError(state, "Failed to register client")
-				return
-			}
-
-			// Step 2: Start device authorization
-			fmt.Println("Starting device authorization...")
-			authResp, errAuth := ssoClient.StartDeviceAuthorization(ctx, regResp.ClientID, regResp.ClientSecret)
-			if errAuth != nil {
-				log.Errorf("Failed to start device auth: %v", errAuth)
-				SetOAuthSessionError(state, "Failed to start device authorization")
-				return
-			}
-
-			// Store the verification URL for the frontend to display.
-			// Using "|" as separator because URLs contain ":".
-			SetOAuthSessionError(state, "device_code|"+authResp.VerificationURIComplete+"|"+authResp.UserCode)
-
-			// Step 3: Poll for token
 			fmt.Println("Waiting for authorization...")
 			interval := 5 * time.Second
 			if authResp.Interval > 0 {
@@ -841,11 +849,11 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 
 			for time.Now().Before(deadline) {
 				select {
-				case <-ctx.Done():
+				case <-pollCtx.Done():
 					SetOAuthSessionError(state, "Authorization cancelled")
 					return
 				case <-time.After(interval):
-					tokenResp, errToken := ssoClient.CreateToken(ctx, regResp.ClientID, regResp.ClientSecret, authResp.DeviceCode)
+					tokenResp, errToken := ssoClient.CreateToken(pollCtx, regResp.ClientID, regResp.ClientSecret, authResp.DeviceCode)
 					if errToken != nil {
 						errStr := errToken.Error()
 						if strings.Contains(errStr, "authorization_pending") {
@@ -912,17 +920,32 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 			SetOAuthSessionError(state, "Authorization timed out")
 		}()
 
-		// Return immediately with the state for polling
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state, "method": "device_code"})
+		c.JSON(http.StatusOK, response)
 
 	case "google", "github":
-		RegisterOAuthSession(state, "kiro")
-
 		// Social auth uses protocol handler - for WEB UI we use a callback forwarder
 		provider := "Google"
 		if method == "github" {
 			provider = "Github"
 		}
+
+		codeVerifier, codeChallenge, errPKCE := generateKiroPKCE()
+		if errPKCE != nil {
+			log.Errorf("Failed to generate PKCE: %v", errPKCE)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE"})
+			return
+		}
+		authURL := fmt.Sprintf("%s/login?idp=%s&redirect_uri=%s&code_challenge=%s&code_challenge_method=S256&state=%s&prompt=select_account",
+			"https://prod.us-east-1.auth.desktop.kiro.dev",
+			provider,
+			url.QueryEscape(kiroauth.KiroRedirectURI),
+			codeChallenge,
+			state,
+		)
+
+		RegisterOAuthSession(state, "kiro")
+		response := oauthStartResponse(c, state, authURL, "", "", 0)
+		response["method"] = "social"
 
 		isWebUI := isWebUIRequest(c)
 		var forwarder *callbackForwarder
@@ -948,32 +971,14 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 
 			socialClient := kiroauth.NewSocialAuthClient(h.cfg)
 
-			// Generate PKCE codes
-			codeVerifier, codeChallenge, errPKCE := generateKiroPKCE()
-			if errPKCE != nil {
-				log.Errorf("Failed to generate PKCE: %v", errPKCE)
-				SetOAuthSessionError(state, "Failed to generate PKCE")
-				return
-			}
-
-			// Build login URL
-			authURL := fmt.Sprintf("%s/login?idp=%s&redirect_uri=%s&code_challenge=%s&code_challenge_method=S256&state=%s&prompt=select_account",
-				"https://prod.us-east-1.auth.desktop.kiro.dev",
-				provider,
-				url.QueryEscape(kiroauth.KiroRedirectURI),
-				codeChallenge,
-				state,
-			)
-
-			// Store auth URL for frontend.
-			// Using "|" as separator because URLs contain ":".
-			SetOAuthSessionError(state, "auth_url|"+authURL)
-
 			// Wait for callback file
 			waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-kiro-%s.oauth", state))
 			deadline := time.Now().Add(5 * time.Minute)
 
 			for {
+				if !IsOAuthSessionPending(state, "kiro") {
+					return
+				}
 				if time.Now().After(deadline) {
 					log.Error("oauth flow timed out")
 					SetOAuthSessionError(state, "OAuth flow timed out")
@@ -1068,7 +1073,7 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 			}
 		}()
 
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state, "method": "social"})
+		c.JSON(http.StatusOK, response)
 
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid method, use 'aws', 'google', or 'github'"})
@@ -1093,10 +1098,13 @@ func (h *Handler) RequestQoderToken(c *gin.Context) {
 	}
 
 	RegisterOAuthSession(state, "qoder")
+	response := oauthStartResponse(c, state, deviceFlow.VerificationURIComplete, "device", "", 0)
 
 	go func() {
 		fmt.Println("Waiting for authentication...")
-		tokenData, errPollForToken := qoderAuth.PollForToken(ctx, deviceFlow)
+		pollCtx, cancelPoll := oauthPollContext(ctx, state, "qoder")
+		defer cancelPoll()
+		tokenData, errPollForToken := qoderAuth.PollForToken(pollCtx, deviceFlow)
 		if errPollForToken != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", errPollForToken)
@@ -1171,7 +1179,7 @@ func (h *Handler) RequestQoderToken(c *gin.Context) {
 		CompleteOAuthSessionsByProvider("qoder")
 	}()
 
-	c.JSON(200, gin.H{"status": "ok", "url": deviceFlow.VerificationURIComplete, "state": state})
+	c.JSON(http.StatusOK, response)
 }
 
 func authFileExcludedModelsValue(value any) []string {
@@ -1220,115 +1228,6 @@ func buildGitLabAuthMetadata(baseURL, mode string, tokenResp *gitlabauth.TokenRe
 	return metadata
 }
 
-func callGeminiCLI(ctx context.Context, httpClient *http.Client, endpoint string, body any, result any) error {
-	endPointURL := fmt.Sprintf("%s/%s:%s", geminiCLIEndpoint, geminiCLIVersion, endpoint)
-	if strings.HasPrefix(endpoint, "operations/") {
-		endPointURL = fmt.Sprintf("%s/%s", geminiCLIEndpoint, endpoint)
-	}
-
-	var reader io.Reader
-	if body != nil {
-		rawBody, errMarshal := json.Marshal(body)
-		if errMarshal != nil {
-			return fmt.Errorf("marshal request body: %w", errMarshal)
-		}
-		reader = bytes.NewReader(rawBody)
-	}
-
-	req, errRequest := http.NewRequestWithContext(ctx, http.MethodPost, endPointURL, reader)
-	if errRequest != nil {
-		return fmt.Errorf("create request: %w", errRequest)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", misc.GeminiCLIUserAgent(""))
-
-	resp, errDo := httpClient.Do(req)
-	if errDo != nil {
-		return fmt.Errorf("execute request: %w", errDo)
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("response body close error: %v", errClose)
-		}
-	}()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("api request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
-	}
-
-	if result == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
-	}
-
-	if errDecode := json.NewDecoder(resp.Body).Decode(result); errDecode != nil {
-		return fmt.Errorf("decode response body: %w", errDecode)
-	}
-
-	return nil
-}
-
-func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projectID string) (bool, error) {
-	serviceUsageURL := "https://serviceusage.googleapis.com"
-	requiredServices := []string{
-		"cloudaicompanion.googleapis.com",
-	}
-	for _, service := range requiredServices {
-		checkURL := fmt.Sprintf("%s/v1/projects/%s/services/%s", serviceUsageURL, projectID, service)
-		req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, checkURL, nil)
-		if errRequest != nil {
-			return false, fmt.Errorf("failed to create request: %w", errRequest)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", misc.GeminiCLIUserAgent(""))
-		resp, errDo := httpClient.Do(req)
-		if errDo != nil {
-			return false, fmt.Errorf("failed to execute request: %w", errDo)
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			bodyBytes, _ := io.ReadAll(resp.Body)
-			if ojson.GetBytes(bodyBytes, "state").String() == "ENABLED" {
-				_ = resp.Body.Close()
-				continue
-			}
-		}
-		_ = resp.Body.Close()
-
-		enableURL := fmt.Sprintf("%s/v1/projects/%s/services/%s:enable", serviceUsageURL, projectID, service)
-		req, errRequest = http.NewRequestWithContext(ctx, http.MethodPost, enableURL, strings.NewReader("{}"))
-		if errRequest != nil {
-			return false, fmt.Errorf("failed to create request: %w", errRequest)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", misc.GeminiCLIUserAgent(""))
-		resp, errDo = httpClient.Do(req)
-		if errDo != nil {
-			return false, fmt.Errorf("failed to execute request: %w", errDo)
-		}
-
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		errMessage := string(bodyBytes)
-		errMessageResult := ojson.GetBytes(bodyBytes, "error.message")
-		if errMessageResult.Exists() {
-			errMessage = errMessageResult.String()
-		}
-		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-			_ = resp.Body.Close()
-			continue
-		} else if resp.StatusCode == http.StatusBadRequest {
-			_ = resp.Body.Close()
-			if strings.Contains(strings.ToLower(errMessage), "already enabled") {
-				continue
-			}
-		}
-		_ = resp.Body.Close()
-		return false, fmt.Errorf("project activation required: %s", errMessage)
-	}
-	return true, nil
-}
-
 func copilotTokenMetadata(storage *copilot.CopilotTokenStorage) (map[string]any, error) {
 	if storage == nil {
 		return nil, fmt.Errorf("token storage is nil")
@@ -1342,86 +1241,6 @@ func copilotTokenMetadata(storage *copilot.CopilotTokenStorage) (map[string]any,
 		return nil, fmt.Errorf("unmarshal token storage: %w", errUnmarshal)
 	}
 	return metadata, nil
-}
-
-func ensureGeminiProjectAndOnboard(ctx context.Context, httpClient *http.Client, storage *geminiAuth.GeminiTokenStorage, requestedProject string) error {
-	if storage == nil {
-		return fmt.Errorf("gemini storage is nil")
-	}
-
-	trimmedRequest := strings.TrimSpace(requestedProject)
-	if trimmedRequest == "" {
-		projects, errProjects := fetchGCPProjects(ctx, httpClient)
-		if errProjects != nil {
-			return fmt.Errorf("fetch project list: %w", errProjects)
-		}
-		if len(projects) == 0 {
-			return fmt.Errorf("no Google Cloud projects available for this account")
-		}
-		trimmedRequest = strings.TrimSpace(projects[0].ProjectID)
-		if trimmedRequest == "" {
-			return fmt.Errorf("resolved project id is empty")
-		}
-		storage.Auto = true
-	} else {
-		storage.Auto = false
-	}
-
-	if err := performGeminiCLISetup(ctx, httpClient, storage, trimmedRequest); err != nil {
-		return err
-	}
-
-	if strings.TrimSpace(storage.ProjectID) == "" {
-		storage.ProjectID = trimmedRequest
-	}
-
-	return nil
-}
-
-func ensureGeminiProjectsEnabled(ctx context.Context, httpClient *http.Client, projectIDs []string) error {
-	for _, pid := range projectIDs {
-		trimmed := strings.TrimSpace(pid)
-		if trimmed == "" {
-			continue
-		}
-		isChecked, errCheck := checkCloudAPIIsEnabled(ctx, httpClient, trimmed)
-		if errCheck != nil {
-			return fmt.Errorf("project %s: %w", trimmed, errCheck)
-		}
-		if !isChecked {
-			return fmt.Errorf("project %s: Cloud AI API not enabled", trimmed)
-		}
-	}
-	return nil
-}
-
-func fetchGCPProjects(ctx context.Context, httpClient *http.Client) ([]interfaces.GCPProjectProjects, error) {
-	req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, "https://cloudresourcemanager.googleapis.com/v1/projects", nil)
-	if errRequest != nil {
-		return nil, fmt.Errorf("could not create project list request: %w", errRequest)
-	}
-
-	resp, errDo := httpClient.Do(req)
-	if errDo != nil {
-		return nil, fmt.Errorf("failed to execute project list request: %w", errDo)
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("response body close error: %v", errClose)
-		}
-	}()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("project list request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
-	}
-
-	var projects interfaces.GCPProject
-	if errDecode := json.NewDecoder(resp.Body).Decode(&projects); errDecode != nil {
-		return nil, fmt.Errorf("failed to unmarshal project list: %w", errDecode)
-	}
-
-	return projects.Projects, nil
 }
 
 func generateKiroPKCE() (verifier, challenge string, err error) {
@@ -1586,188 +1405,6 @@ func (h *Handler) notifyAuthFilePersisted(ctx context.Context, auth *coreauth.Au
 		return nil
 	}
 	return h.postAuthPersistHook(ctx, auth)
-}
-
-func onboardAllGeminiProjects(ctx context.Context, httpClient *http.Client, storage *geminiAuth.GeminiTokenStorage) ([]string, error) {
-	projects, errProjects := fetchGCPProjects(ctx, httpClient)
-	if errProjects != nil {
-		return nil, fmt.Errorf("fetch project list: %w", errProjects)
-	}
-	if len(projects) == 0 {
-		return nil, fmt.Errorf("no Google Cloud projects available for this account")
-	}
-	activated := make([]string, 0, len(projects))
-	seen := make(map[string]struct{}, len(projects))
-	for _, project := range projects {
-		candidate := strings.TrimSpace(project.ProjectID)
-		if candidate == "" {
-			continue
-		}
-		if _, dup := seen[candidate]; dup {
-			continue
-		}
-		if err := performGeminiCLISetup(ctx, httpClient, storage, candidate); err != nil {
-			return nil, fmt.Errorf("onboard project %s: %w", candidate, err)
-		}
-		finalID := strings.TrimSpace(storage.ProjectID)
-		if finalID == "" {
-			finalID = candidate
-		}
-		activated = append(activated, finalID)
-		seen[candidate] = struct{}{}
-	}
-	if len(activated) == 0 {
-		return nil, fmt.Errorf("no Google Cloud projects available for this account")
-	}
-	return activated, nil
-}
-
-func performGeminiCLISetup(ctx context.Context, httpClient *http.Client, storage *geminiAuth.GeminiTokenStorage, requestedProject string) error {
-	metadata := map[string]string{
-		"ideType":    "IDE_UNSPECIFIED",
-		"platform":   "PLATFORM_UNSPECIFIED",
-		"pluginType": "GEMINI",
-	}
-
-	trimmedRequest := strings.TrimSpace(requestedProject)
-	explicitProject := trimmedRequest != ""
-
-	loadReqBody := map[string]any{
-		"metadata": metadata,
-	}
-	if explicitProject {
-		loadReqBody["cloudaicompanionProject"] = trimmedRequest
-	}
-
-	var loadResp map[string]any
-	if errLoad := callGeminiCLI(ctx, httpClient, "loadCodeAssist", loadReqBody, &loadResp); errLoad != nil {
-		return fmt.Errorf("load code assist: %w", errLoad)
-	}
-
-	tierID := "legacy-tier"
-	if tiers, okTiers := loadResp["allowedTiers"].([]any); okTiers {
-		for _, rawTier := range tiers {
-			tier, okTier := rawTier.(map[string]any)
-			if !okTier {
-				continue
-			}
-			if isDefault, okDefault := tier["isDefault"].(bool); okDefault && isDefault {
-				if id, okID := tier["id"].(string); okID && strings.TrimSpace(id) != "" {
-					tierID = strings.TrimSpace(id)
-					break
-				}
-			}
-		}
-	}
-
-	projectID := trimmedRequest
-	if projectID == "" {
-		if id, okProject := loadResp["cloudaicompanionProject"].(string); okProject {
-			projectID = strings.TrimSpace(id)
-		}
-		if projectID == "" {
-			if projectMap, okProject := loadResp["cloudaicompanionProject"].(map[string]any); okProject {
-				if id, okID := projectMap["id"].(string); okID {
-					projectID = strings.TrimSpace(id)
-				}
-			}
-		}
-	}
-	if projectID == "" {
-		// Auto-discovery: try onboardUser without specifying a project
-		// to let Google auto-provision one (matches Gemini CLI headless behavior
-		// and Antigravity's FetchProjectID pattern).
-		autoOnboardReq := map[string]any{
-			"tierId":   tierID,
-			"metadata": metadata,
-		}
-
-		autoCtx, autoCancel := context.WithTimeout(ctx, 30*time.Second)
-		defer autoCancel()
-		for attempt := 1; ; attempt++ {
-			var onboardResp map[string]any
-			if errOnboard := callGeminiCLI(autoCtx, httpClient, "onboardUser", autoOnboardReq, &onboardResp); errOnboard != nil {
-				return fmt.Errorf("auto-discovery onboardUser: %w", errOnboard)
-			}
-
-			if done, okDone := onboardResp["done"].(bool); okDone && done {
-				if resp, okResp := onboardResp["response"].(map[string]any); okResp {
-					switch v := resp["cloudaicompanionProject"].(type) {
-					case string:
-						projectID = strings.TrimSpace(v)
-					case map[string]any:
-						if id, okID := v["id"].(string); okID {
-							projectID = strings.TrimSpace(id)
-						}
-					}
-				}
-				break
-			}
-
-			log.Debugf("Auto-discovery: onboarding in progress, attempt %d...", attempt)
-			select {
-			case <-autoCtx.Done():
-				return &projectSelectionRequiredError{}
-			case <-time.After(2 * time.Second):
-			}
-		}
-
-		if projectID == "" {
-			return &projectSelectionRequiredError{}
-		}
-		log.Infof("Auto-discovered project ID via onboarding: %s", projectID)
-	}
-
-	onboardReqBody := map[string]any{
-		"tierId":                  tierID,
-		"metadata":                metadata,
-		"cloudaicompanionProject": projectID,
-	}
-
-	storage.ProjectID = projectID
-
-	for {
-		var onboardResp map[string]any
-		if errOnboard := callGeminiCLI(ctx, httpClient, "onboardUser", onboardReqBody, &onboardResp); errOnboard != nil {
-			return fmt.Errorf("onboard user: %w", errOnboard)
-		}
-
-		if done, okDone := onboardResp["done"].(bool); okDone && done {
-			responseProjectID := ""
-			if resp, okResp := onboardResp["response"].(map[string]any); okResp {
-				switch projectValue := resp["cloudaicompanionProject"].(type) {
-				case map[string]any:
-					if id, okID := projectValue["id"].(string); okID {
-						responseProjectID = strings.TrimSpace(id)
-					}
-				case string:
-					responseProjectID = strings.TrimSpace(projectValue)
-				}
-			}
-
-			finalProjectID := projectID
-			if responseProjectID != "" {
-				if explicitProject && !strings.EqualFold(responseProjectID, projectID) {
-					log.Infof("Gemini onboarding: requested project %s maps to backend project %s", projectID, responseProjectID)
-					log.Infof("Using backend project ID: %s", responseProjectID)
-				}
-				finalProjectID = responseProjectID
-			}
-
-			storage.ProjectID = strings.TrimSpace(finalProjectID)
-			if storage.ProjectID == "" {
-				storage.ProjectID = strings.TrimSpace(projectID)
-			}
-			if storage.ProjectID == "" {
-				return fmt.Errorf("onboard user completed without project id")
-			}
-			log.Infof("Onboarding complete. Using Project ID: %s", storage.ProjectID)
-			return nil
-		}
-
-		log.Println("Onboarding in progress, waiting 5 seconds...")
-		time.Sleep(5 * time.Second)
-	}
 }
 
 func primaryGitLabEmail(user *gitlabauth.User) string {

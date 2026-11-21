@@ -84,31 +84,43 @@ func (h *Host) PluginExecutorRequestToFormat(pluginID string, req coreexecutor.R
 
 // ExecutePluginExecutor executes a request with the named plugin executor without changing the requested model.
 func (h *Host) ExecutePluginExecutor(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	resp, _, err := h.ExecutePluginExecutorWithAttribution(ctx, pluginID, req, opts)
+	return resp, err
+}
+
+// ExecutePluginExecutorWithAttribution executes a request with the named plugin executor and returns optional plugin attribution.
+func (h *Host) ExecutePluginExecutorWithAttribution(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, *pluginapi.UsageAttribution, error) {
 	adapter, errAdapter := h.executorAdapterForPlugin(pluginID)
 	if errAdapter != nil {
-		return coreexecutor.Response{}, errAdapter
+		return coreexecutor.Response{}, nil, errAdapter
 	}
-	resp, err := adapter.Execute(ctx, (*coreauth.Auth)(nil), req, opts)
+	resp, attribution, err := adapter.executeWithAttribution(ctx, (*coreauth.Auth)(nil), req, opts)
 	if err != nil {
-		return coreexecutor.Response{}, err
+		return coreexecutor.Response{}, attribution, err
 	}
 	if coreauth.IsEmptyCompletionPayload(resp.Payload) {
-		return coreexecutor.Response{}, coreauth.EmptyCompletionError()
+		return coreexecutor.Response{}, attribution, coreauth.EmptyCompletionError()
 	}
-	return resp, nil
+	return resp, attribution, nil
 }
 
 // ExecutePluginExecutorStream executes a streaming request with the named plugin executor without changing the requested model.
 func (h *Host) ExecutePluginExecutorStream(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	result, _, err := h.ExecutePluginExecutorStreamWithAttribution(ctx, pluginID, req, opts)
+	return result, err
+}
+
+// ExecutePluginExecutorStreamWithAttribution executes a streaming request with the named plugin executor and returns optional plugin attribution.
+func (h *Host) ExecutePluginExecutorStreamWithAttribution(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, *pluginapi.UsageAttribution, error) {
 	adapter, errAdapter := h.executorAdapterForPlugin(pluginID)
 	if errAdapter != nil {
-		return nil, errAdapter
+		return nil, nil, errAdapter
 	}
-	streamResult, err := adapter.ExecuteStream(ctx, (*coreauth.Auth)(nil), req, opts)
+	streamResult, attribution, err := adapter.executeStreamWithAttribution(ctx, (*coreauth.Auth)(nil), req, opts)
 	if err != nil {
-		return nil, err
+		return nil, attribution, err
 	}
-	return wrapStreamEmptyCompletion(ctx, streamResult), nil
+	return wrapStreamEmptyCompletion(ctx, streamResult), attribution, nil
 }
 
 // wrapStreamEmptyCompletion wraps a plugin stream so that a terminal but empty
@@ -231,14 +243,6 @@ func discardStreamChunks(ch <-chan coreexecutor.StreamChunk) {
 		for range ch {
 		}
 	}()
-}
-
-func streamChunkPayload(chunks []coreexecutor.StreamChunk) []byte {
-	var payload []byte
-	for _, chunk := range chunks {
-		payload = append(payload, chunk.Payload...)
-	}
-	return payload
 }
 
 // CountPluginExecutor executes a count-tokens request with the named plugin executor without changing the requested model.

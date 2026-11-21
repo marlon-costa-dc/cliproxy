@@ -117,15 +117,15 @@ func TestPatchAuthFileFields_RefreshesModelRegistryImmediately(t *testing.T) {
 		coreManager: manager,
 	}
 	auth := &coreauth.Auth{
-		ID:       "auth-gemini-cli-patch",
-		FileName: "gemini-cli-patch.json",
-		Provider: "gemini-cli",
+		ID:       "auth-claude-patch",
+		FileName: "claude-patch.json",
+		Provider: "claude",
 		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
 			"auth_kind": "oauth",
 		},
 		Metadata: map[string]any{
-			"type": "gemini-cli",
+			"type": "claude",
 		},
 	}
 	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
@@ -141,7 +141,7 @@ func TestPatchAuthFileFields_RefreshesModelRegistryImmediately(t *testing.T) {
 
 	initialModels := modelRegistry.GetModelsForClient(auth.ID)
 	if len(initialModels) == 0 {
-		t.Fatal("expected initial gemini-cli models to be registered")
+		t.Fatal("expected initial claude models to be registered")
 	}
 	excludedModel := strings.TrimSpace(initialModels[0].ID)
 	if excludedModel == "" {

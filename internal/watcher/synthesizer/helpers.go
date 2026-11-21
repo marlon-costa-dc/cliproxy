@@ -10,6 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 )
 
 // StableIDGenerator generates stable, deterministic IDs for auth entries.
@@ -149,6 +150,16 @@ func addConfigHeadersToAttrs(headers map[string]string, attrs map[string]string)
 		}
 		attrs["header:"+key] = val
 	}
+}
+
+// authRateLimit carries a key's rate-limit block onto its credential. Config
+// ingress already validated the block, so an invalid one cannot reach here.
+func authRateLimit(spec *ratelimit.Spec) *ratelimit.Config {
+	cfg, errSpec := spec.Config()
+	if errSpec != nil || !cfg.Active() {
+		return nil
+	}
+	return &cfg
 }
 
 // applyDefaultQuotaDomain keeps a declared quota domain and otherwise names the

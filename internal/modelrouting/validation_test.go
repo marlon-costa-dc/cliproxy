@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 	"gopkg.in/yaml.v3"
 )
 
@@ -103,6 +104,36 @@ func TestValidateAcceptsLosslessRouteProjection(t *testing.T) {
 	cfg := validConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestRouteRateLimitRoundTripsAndValidates(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.DirectModels[0].Routes[0].RateLimit = &ratelimit.Spec{MaxConcurrency: 1, DailyMaxRequests: 100, MinInterval: "500ms"}
+	refreshProjectionDigest(t, &cfg)
+	payload, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Config
+	if err = yaml.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal() with route rate-limit: %v", err)
+	}
+	if err = decoded.Validate(); err != nil {
+		t.Fatalf("Validate() with route rate-limit: %v", err)
+	}
+	if got := decoded.DirectModels[0].Routes[0].RateLimit; got == nil || *got != *cfg.DirectModels[0].Routes[0].RateLimit {
+		t.Fatalf("round-tripped rate-limit = %+v", got)
+	}
+	if !strings.Contains(string(SchemaJSON()), `"rate-limit":{"$ref":"#/$defs/rate-limit"}`) {
+		t.Fatal("schema does not declare the route rate-limit")
+	}
+
+	cfg.DirectModels[0].Routes[0].RateLimit = &ratelimit.Spec{MaxConcurrency: -1}
+	refreshProjectionDigest(t, &cfg)
+	if err = cfg.Validate(); err == nil || !strings.Contains(err.Error(), "routes[0].rate-limit.max-concurrency") {
+		t.Fatalf("Validate() error = %v, want route rate-limit rejection", err)
 	}
 }
 

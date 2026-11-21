@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 )
 
 // VertexCompatKey represents the configuration for Vertex AI-compatible API keys.
@@ -24,6 +25,9 @@ type VertexCompatKey struct {
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this credential (e.g., "teamA/vertex-pro").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
