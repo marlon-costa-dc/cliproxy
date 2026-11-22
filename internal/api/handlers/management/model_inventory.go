@@ -398,7 +398,7 @@ func routeProtocols(protocols []string) []string {
 }
 
 func inventoryCredential(route registry.RegisteredRouteSnapshot, auth *coreauth.Auth, now time.Time) modelrouting.InventoryCredential {
-	return routingInventoryCredential(route, auth, credentialQuotaDomainForInventory(auth), now)
+	return routingInventoryCredential(route, auth, credentialQuotaDomainForInventory(auth, route.RuntimeModelID), now)
 }
 
 func appendBootstrapVariant(model *modelrouting.InventoryModel, info *registry.ModelInfo, variantID string, protocols []string) {
@@ -459,8 +459,8 @@ func modelKeyJSON(value modelrouting.ModelKey) modelrouting.ModelKeyJSON {
 	return modelrouting.ModelKeyJSON{CatalogProviderID: value.CatalogProviderID, CanonicalModelID: value.CanonicalModelID}
 }
 
-func credentialQuotaDomainForInventory(auth *coreauth.Auth) string {
-	if domain := auth.RoutingQuotaDomain(); domain != "" {
+func credentialQuotaDomainForInventory(auth *coreauth.Auth, model string) string {
+	if domain := auth.ModelQuotaDomain(model); domain != "" {
 		return domain
 	}
 	return "unknown"

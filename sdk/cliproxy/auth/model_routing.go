@@ -222,7 +222,7 @@ func (m *Manager) validateModelRoutingRuntime(projection *modelrouting.Config, n
 					continue
 				}
 				found[approved] = struct{}{}
-				quotaDomain := credentialQuotaDomain(auth)
+				quotaDomain := auth.ModelQuotaDomain(route.RuntimeModelID)
 				if quotaDomain == "" {
 					return fmt.Errorf("%s: registered route %d has no explicit quota domain", path, registeredIndex)
 				}
@@ -254,7 +254,7 @@ func (m *Manager) validateModelRoutingRuntime(projection *modelrouting.Config, n
 				domains := make(map[string]struct{})
 				for _, auth := range m.snapshotAuths() {
 					if credentialAllowed(candidate.CredentialRefs, auth) {
-						domains[credentialQuotaDomain(auth)] = struct{}{}
+						domains[auth.ModelQuotaDomain(candidate.RuntimeModelID)] = struct{}{}
 					}
 				}
 				if !equalStrings(sortedRoutingKeys(domains), candidate.QuotaDomains) {
@@ -898,13 +898,6 @@ func modelRoutingResponseHeaders(candidate RoutingCandidate, credential modelRou
 		headers.Set(quotaDomainHeader, credential.quotaDomain)
 	}
 	return headers
-}
-
-func credentialQuotaDomain(auth *Auth) string {
-	if auth == nil {
-		return ""
-	}
-	return auth.RoutingQuotaDomain()
 }
 
 type modelRoutingPointer = atomic.Pointer[modelRoutingTable]

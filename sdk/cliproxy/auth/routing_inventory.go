@@ -2,7 +2,9 @@ package auth
 
 import (
 	"crypto/sha256"
+
 	"encoding/hex"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"strconv"
 	"time"
 )
@@ -37,6 +39,15 @@ func (a *Auth) RoutingQuotaDomain() string {
 		return a.QuotaDomain
 	}
 	return a.Provider
+}
+
+// ModelQuotaDomain identifies the separate free pool for OpenCode routes.
+func (a *Auth) ModelQuotaDomain(model string) string {
+	domain := a.RoutingQuotaDomain()
+	if a != nil && domain != "" && registry.OpenCodeFreeModel(a.Provider, model) {
+		return domain + ":free"
+	}
+	return domain
 }
 
 // RoutingCredentialRevision identifies a registration and version without secrets.

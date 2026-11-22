@@ -50,13 +50,10 @@
     "minimax-m3": "chat",
     "deepseek-v4.1-flash": "chat",
     "deepseek-v4-pro": "chat",
-    "deepseek-v4.1-flash-free": "chat",
     "mimo-v2.5-free": "chat",
     "mimo-v2.5": "chat",
     "hy3-free": "chat",
-    "big-pickle": "chat",
     "nemotron-3-ultra-free": "chat",
-    "nemotron-3.5-lightning-free": "chat",
     "laguna-s-2.1-free": "chat",
     "glm-5": "chat",
     "glm-5.1": "chat",
@@ -102,5 +99,24 @@
     "hy3": "chat",
     "hy3-preview": "chat",
     "qwen3.5-plus": "messages"
+  },
+  "free": {
+    "go": {
+      "beam-free": "chat",
+      "iceman-contributor-free": "chat",
+      "hy4-flash-free": "chat"
+    },
+    "zen": {
+      "big-pickle": "chat",
+      "mimo-v2.6-flash-free": "chat",
+      "deepseek-v4.1-flash-free": "chat",
+      "iceman-free": "chat",
+      "beam-free": "chat",
+      "flint-40b-free": "chat",
+      "nemotron-3.5-super-vl-free": "chat",
+      "nemotron-3.5-lightning-free": "chat",
+      "hy4-flash-free": "chat",
+      "tidepool-alpha-free": "chat"
+    }
   }
 }

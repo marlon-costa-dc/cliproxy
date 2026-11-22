@@ -31,6 +31,7 @@ type modelRoutingCredentialEvidence struct {
 }
 
 type modelRoutingSelectionEvidence struct {
+	model      string
 	mu         sync.RWMutex
 	credential modelRoutingCredentialEvidence
 }
@@ -40,7 +41,7 @@ func (e *modelRoutingSelectionEvidence) record(auth *Auth) {
 	defer e.mu.Unlock()
 	e.credential = modelRoutingCredentialEvidence{
 		ref: credentialReference(auth), revision: auth.RoutingCredentialRevision(),
-		quotaDomain: credentialQuotaDomain(auth),
+		quotaDomain: auth.ModelQuotaDomain(e.model),
 	}
 }
 
@@ -194,7 +195,7 @@ func (m *Manager) initialRoutingCandidates(
 		if errPrepare != nil {
 			return nil, errPrepare
 		}
-		selection := &modelRoutingSelectionEvidence{}
+		selection := &modelRoutingSelectionEvidence{model: candidate.RuntimeModelID}
 		candidateOpts := m.candidateOptions(opts, index, candidate, selection)
 		if !m.routingCandidateKnownSelectable(ctx, candidate, candidateOpts) {
 			continue
