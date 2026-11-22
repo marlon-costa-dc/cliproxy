@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 )
 
 type runtimeConfigValidationError struct {
@@ -38,6 +39,64 @@ func (cfg *Config) ValidateRuntimeConfig() error {
 	}
 	if errValidate := cfg.validateOpenAICompatibilityInventoryFacts(); errValidate != nil {
 		return &runtimeConfigValidationError{domain: "model inventory", err: errValidate}
+	}
+	if errValidate := cfg.validateKeyRateLimits(); errValidate != nil {
+		return &runtimeConfigValidationError{domain: "rate limits", err: errValidate}
+	}
+	return nil
+}
+
+// validateKeyRateLimits checks every API-key rate-limit block once at ingress.
+func (cfg *Config) validateKeyRateLimits() error {
+	if cfg == nil {
+		return nil
+	}
+	check := func(path string, index int, spec *ratelimit.Spec) error {
+		if _, errSpec := spec.Config(); errSpec != nil {
+			return fmt.Errorf("%s[%d].rate-limit.%w", path, index, errSpec)
+		}
+		return nil
+	}
+	for _, family := range []struct {
+		path string
+		keys []CodexKey
+	}{
+		{"codex-api-key", cfg.CodexKey}, {"xai-api-key", cfg.XAIKey}, {"meta-api-key", cfg.MetaKey},
+		{"opencode-api-key", cfg.OpenCodeKey}, {"opencode-go-api-key", cfg.OpenCodeGoKey},
+	} {
+		for index := range family.keys {
+			if errCheck := check(family.path, index, family.keys[index].RateLimit); errCheck != nil {
+				return errCheck
+			}
+		}
+	}
+	for _, family := range []struct {
+		path string
+		keys []GeminiKey
+	}{{"gemini-api-key", cfg.GeminiKey}, {"interactions-api-key", cfg.InteractionsKey}} {
+		for index := range family.keys {
+			if errCheck := check(family.path, index, family.keys[index].RateLimit); errCheck != nil {
+				return errCheck
+			}
+		}
+	}
+	for index := range cfg.ClaudeKey {
+		if errCheck := check("claude-api-key", index, cfg.ClaudeKey[index].RateLimit); errCheck != nil {
+			return errCheck
+		}
+	}
+	for index := range cfg.VertexCompatAPIKey {
+		if errCheck := check("vertex-api-key", index, cfg.VertexCompatAPIKey[index].RateLimit); errCheck != nil {
+			return errCheck
+		}
+	}
+	for providerIndex := range cfg.OpenAICompatibility {
+		path := fmt.Sprintf("openai-compatibility[%d].api-key-entries", providerIndex)
+		for index := range cfg.OpenAICompatibility[providerIndex].APIKeyEntries {
+			if errCheck := check(path, index, cfg.OpenAICompatibility[providerIndex].APIKeyEntries[index].RateLimit); errCheck != nil {
+				return errCheck
+			}
+		}
 	}
 	return nil
 }

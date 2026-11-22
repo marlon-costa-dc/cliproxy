@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/copilot"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -218,6 +219,28 @@ func (m *Manager) RefreshSchedulerAll() {
 	}
 }
 
+func isAuthDisabled(auth *Auth) bool {
+	return auth == nil || auth.Disabled || auth.Status == StatusDisabled
+}
+
+func reconcileAggregatedAuthState(auth *Auth, now time.Time) {
+	if auth == nil {
+		return
+	}
+	wasDisabled := isAuthDisabled(auth)
+	wasUnavailable := auth.Unavailable
+	updateAggregatedAvailability(auth, now)
+	if wasDisabled {
+		auth.Unavailable = wasUnavailable
+		return
+	}
+	if !hasModelError(auth, now) && !hasUnauthorizedAuthFailure(auth) {
+		auth.LastError = nil
+		auth.StatusMessage = ""
+		auth.Status = StatusActive
+	}
+}
+
 // ReconcileRegistryModelStates aligns per-model runtime state with the current
 // registry snapshot for one auth.
 //
@@ -252,8 +275,17 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
 
+		isCopilot := isCopilotAuth(auth)
 		for retry := 0; retry < 10; retry++ {
 			supportedModels, regEpoch = globalReg.GetModelsAndEpochForClient(authID)
+			// Before the first Copilot publication there is no catalog to reconcile against.
+			if isCopilot && regEpoch == 0 && len(supportedModels) == 0 {
+				if globalReg.ClientRegistrationEpoch(authID) != regEpoch {
+					continue
+				}
+				snapshot = auth.Clone()
+				break
+			}
 			candidateAuth := &Auth{
 				ID:          auth.ID,
 				Prefix:      auth.Prefix,
@@ -264,34 +296,12 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			}
 			candidateChanged := m.migrateAuthAliasModelStatesLocked(candidateAuth, supportedModels, now, true)
 
-			supported := make(map[string]struct{}, len(supportedModels))
+			var supported map[string]string
 			if len(supportedModels) > 0 {
-				authoritativeTargets, _ := m.buildAliasMigrationMapsLocked(candidateAuth, supportedModels, true)
-				for targetLookup := range authoritativeTargets {
-					if targetLookup != "" {
-						supported[targetLookup] = struct{}{}
-					}
-				}
+				supported, _ = m.buildAliasMigrationMapsLocked(candidateAuth, supportedModels, true)
 			}
-			for _, model := range supportedModels {
-				if model == nil || strings.TrimSpace(model.ID) == "" {
-					continue
-				}
-				stateKey := m.selectionModelKeyForAuth(auth, model.ID)
-				if stateKey == "" {
-					stateKey = canonicalModelKey(model.ID)
-				}
-				if lookupKey := canonicalModelLookupKey(stateKey); lookupKey != "" {
-					supported[lookupKey] = struct{}{}
-				}
-			}
-
 			for modelKey, state := range candidateAuth.ModelStates {
-				lookupKey := canonicalModelLookupKey(modelKey)
-				if lookupKey == "" {
-					lookupKey = strings.ToLower(strings.TrimSpace(modelKey))
-				}
-				if _, isSupported := supported[lookupKey]; !isSupported {
+				if _, isSupported := supported[modelStateLookupKey(auth, modelKey)]; !isSupported {
 					// Drop state for models that disappeared from the current registry
 					// snapshot and are not reachable via any alias route.
 					delete(candidateAuth.ModelStates, modelKey)
@@ -319,12 +329,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if globalReg.ClientRegistrationEpoch(authID) == regEpoch {
 				auth.ModelStates = candidateAuth.ModelStates
 				if candidateChanged {
-					updateAggregatedAvailability(auth, now)
-					if !hasModelError(auth, now) {
-						auth.LastError = nil
-						auth.StatusMessage = ""
-						auth.Status = StatusActive
-					}
+					reconcileAggregatedAuthState(auth, now)
 					auth.Generation++
 					auth.UpdatedAt = now
 					if errPersist := m.persistLocked(context.Background(), auth); errPersist != nil {
@@ -402,12 +407,46 @@ func isSameUnderlyingModelSpelling(a, b string) bool {
 	return ca == cb || strings.HasPrefix(ca, cb) || strings.HasPrefix(cb, ca)
 }
 
+func isCopilotAuth(auth *Auth) bool {
+	return auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), copilot.Provider)
+}
+
+func buildCopilotMigrationMaps(supportedModels []*registry.ModelInfo) (authoritativeTargets, routeToTarget map[string]string) {
+	authoritativeTargets = make(map[string]string, len(supportedModels))
+	routeToTarget = make(map[string]string, len(supportedModels))
+	// Unsuffixed copilot/ state keys are native IDs, even when a new alias
+	// reuses one. Other legacy keys can still follow exact published routes.
+	isLegacyKey := func(key string) bool {
+		return !strings.HasPrefix(key, copilot.ModelPrefix) || thinking.ParseSuffix(key).HasSuffix
+	}
+	for _, model := range supportedModels {
+		if model == nil || strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		routeID := strings.TrimSpace(model.ID)
+		targetKey := routeID
+		// Use the published native ID, not configured aliases that may not be registered.
+		if nativeID := strings.TrimSpace(model.MetadataModelID); nativeID != "" {
+			targetKey = copilot.ModelPrefix + nativeID
+			legacyLookup := strings.ToLower(nativeID)
+			if _, exists := routeToTarget[legacyLookup]; !exists && isLegacyKey(legacyLookup) {
+				routeToTarget[legacyLookup] = targetKey
+			}
+		}
+		authoritativeTargets[strings.ToLower(targetKey)] = targetKey
+		if routeLookup := strings.ToLower(routeID); isLegacyKey(routeLookup) {
+			routeToTarget[routeLookup] = targetKey
+		}
+	}
+	return authoritativeTargets, routeToTarget
+}
+
 func (m *Manager) buildAliasMigrationMapsLocked(auth *Auth, supportedModels []*registry.ModelInfo, fromExplicitReconcile bool) (map[string]string, map[string]string) {
 	if m == nil || auth == nil {
 		return nil, nil
 	}
-	if !fromExplicitReconcile && len(supportedModels) == 0 && auth.ID != "" {
-		supportedModels = registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
+	if isCopilotAuth(auth) {
+		return buildCopilotMigrationMaps(supportedModels)
 	}
 
 	allRegistered := make(map[string]struct{}, len(supportedModels))
@@ -445,9 +484,7 @@ func (m *Manager) buildAliasMigrationMapsLocked(auth *Auth, supportedModels []*r
 			_, routeIsNative := nativeRegistered[routeLookup]
 			_, targetIsNative := nativeRegistered[targetLookup]
 			if routeIsNative && targetIsNative && !isSameUnderlyingModelSpelling(canonicalRoute, targetKey) {
-				authoritativeTargets[routeLookup] = canonicalRoute
-				routeToTarget[routeLookup] = canonicalRoute
-				continue
+				targetKey, targetLookup = canonicalRoute, routeLookup
 			}
 		}
 		if targetLookup != "" {
@@ -500,17 +537,18 @@ func (m *Manager) resolveMarkResultModelKeyLocked(auth *Auth, modelKey, routeMod
 			return canonicalModel
 		}
 	}
-	lookupKey := canonicalModelLookupKey(canonicalModel)
-	authoritativeTargets, routeToTarget := m.buildAliasMigrationMapsLocked(auth, nil, false)
-	if authTarget, isAuthTarget := authoritativeTargets[lookupKey]; isAuthTarget && authTarget != "" {
+	lookupKey := modelStateLookupKey(auth, canonicalModel)
+	supportedModels := registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
+	authoritativeTargets, routeToTarget := m.buildAliasMigrationMapsLocked(auth, supportedModels, false)
+	if authTarget := authoritativeTargets[lookupKey]; authTarget != "" {
 		return authTarget
 	}
 	targetKey := routeToTarget[lookupKey]
-	if targetKey == "" {
+	if targetKey == "" && !isCopilotAuth(auth) {
 		targetKey = m.selectionModelKeyForAuth(auth, canonicalModel)
 	}
-	if targetKey != "" && !sameCanonicalModelKey(canonicalModel, targetKey) {
-		if authTarget, isAuthTarget := authoritativeTargets[canonicalModelLookupKey(targetKey)]; isAuthTarget && authTarget != "" {
+	if targetLookup := modelStateLookupKey(auth, targetKey); targetKey != "" && lookupKey != targetLookup {
+		if authTarget := authoritativeTargets[targetLookup]; authTarget != "" {
 			targetKey = authTarget
 		}
 		return targetKey
@@ -519,7 +557,14 @@ func (m *Manager) resolveMarkResultModelKeyLocked(auth *Auth, modelKey, routeMod
 }
 
 func (m *Manager) migrateAuthAliasModelStatesLocked(auth *Auth, supportedModels []*registry.ModelInfo, now time.Time, fromExplicitReconcile bool) bool {
-	if auth == nil {
+	if auth == nil || len(auth.ModelStates) == 0 {
+		return false
+	}
+	if m != nil && !fromExplicitReconcile && len(supportedModels) == 0 && auth.ID != "" {
+		supportedModels = registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
+	}
+	isCopilot := isCopilotAuth(auth)
+	if isCopilot && len(supportedModels) == 0 {
 		return false
 	}
 	changed := normalizeModelStates(auth)
@@ -546,8 +591,7 @@ func (m *Manager) migrateAuthAliasModelStatesLocked(auth *Auth, supportedModels 
 		if !exists {
 			continue
 		}
-		canonicalRoute := canonicalModelKey(stateKey)
-		routeLookup := canonicalModelLookupKey(canonicalRoute)
+		routeLookup := modelStateLookupKey(auth, modelStateKey(auth, stateKey))
 		if routeLookup == "" {
 			continue
 		}
@@ -555,17 +599,18 @@ func (m *Manager) migrateAuthAliasModelStatesLocked(auth *Auth, supportedModels 
 			continue
 		}
 		targetKey := routeToTarget[routeLookup]
-		if targetKey == "" {
+		if targetKey == "" && !isCopilot {
 			targetKey = m.selectionModelKeyForAuth(auth, stateKey)
 		}
-		if targetKey == "" || sameCanonicalModelKey(canonicalRoute, targetKey) {
+		targetLookup := modelStateLookupKey(auth, targetKey)
+		if targetKey == "" || routeLookup == targetLookup {
 			continue
 		}
-		if authTarget, isAuthTarget := authoritativeTargets[canonicalModelLookupKey(targetKey)]; isAuthTarget && authTarget != "" {
+		if authTarget := authoritativeTargets[targetLookup]; authTarget != "" {
 			targetKey = authTarget
 		}
 		if working == nil {
-			working = &Auth{ModelStates: cloneModelStates(auth.ModelStates)}
+			working = &Auth{Provider: auth.Provider, ModelStates: cloneModelStates(auth.ModelStates)}
 		}
 		if state != nil && (!modelStateIsClean(state) || isModelStateActiveCooldown(state, now)) {
 			mergeOrSetModelState(working, targetKey, state)
@@ -594,9 +639,9 @@ func mergeOrSetModelState(auth *Auth, targetKey string, state *ModelState) {
 		auth.ModelStates[targetKey] = mergeModelState(existingTarget, state)
 		return
 	}
-	targetLookup := canonicalModelLookupKey(targetKey)
+	targetLookup := modelStateLookupKey(auth, targetKey)
 	for existingKey, existingState := range auth.ModelStates {
-		if canonicalModelLookupKey(existingKey) != targetLookup {
+		if modelStateLookupKey(auth, existingKey) != targetLookup {
 			continue
 		}
 		if existingState != nil {
@@ -648,12 +693,7 @@ func (m *Manager) publishOAuthModelAliasAndReconcileStates(ctx context.Context, 
 		supportedModels, regEpoch := globalReg.GetModelsAndEpochForClient(authID)
 		candidateChanged := m.migrateAuthAliasModelStatesLocked(auth, supportedModels, now, false)
 		if candidateChanged {
-			updateAggregatedAvailability(auth, now)
-			if !hasModelError(auth, now) && !hasUnauthorizedAuthFailure(auth) {
-				auth.LastError = nil
-				auth.StatusMessage = ""
-				auth.Status = StatusActive
-			}
+			reconcileAggregatedAuthState(auth, now)
 			auth.Generation++
 			auth.UpdatedAt = now
 		}
@@ -703,12 +743,7 @@ func (m *Manager) publishOAuthModelAliasAndReconcileStates(ctx context.Context, 
 				}
 				postNow := time.Now()
 				if m.migrateAuthAliasModelStatesLocked(current, nil, postNow, false) {
-					updateAggregatedAvailability(current, postNow)
-					if !hasModelError(current, postNow) && !hasUnauthorizedAuthFailure(current) {
-						current.LastError = nil
-						current.StatusMessage = ""
-						current.Status = StatusActive
-					}
+					reconcileAggregatedAuthState(current, postNow)
 					current.Generation++
 					current.UpdatedAt = postNow
 					if m.scheduler != nil {
@@ -802,11 +837,10 @@ func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Aut
 	if m == nil {
 		return nil, "unsupported"
 	}
-	m.mu.RLock()
-	if m.pluginScheduler != nil {
-		m.mu.RUnlock()
+	if m.hasPluginScheduler() {
 		return nil, "unsupported"
 	}
+	m.mu.RLock()
 	sel := m.selector
 	authProviderMap := make(map[string]string, len(m.auths))
 	for id, a := range m.auths {
@@ -970,7 +1004,7 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 // or scheduler additionally receives lower priority tiers.
 func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Selector, auths []*Auth, provider, routeModel string, now time.Time, schedulerAcross bool, clientHeaders ...http.Header) (priorityAuths, selectorAuths []*Auth, err error) {
 	_, sessionAffinity := selector.(*SessionAffinitySelector)
-	if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
+	if UnwrapWeightedRoundRobinSelector(selector) != nil {
 		// Exclude zero-weight credentials before priority selection, just as the
 		// scheduler predicate does, including when only a lower tier has weight.
 		auths = positiveWeightAuths(auths)
@@ -1452,6 +1486,10 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 	if registryRef == nil || auth == nil {
 		return true
 	}
+	if m.usesPublishedCopilotRoutes(auth) {
+		model, _ := copilotRouteForAuth(registryRef, auth.ID, routeModel)
+		return strings.TrimSpace(routeModel) == "" || model != ""
+	}
 	routeKey := canonicalModelKey(routeModel)
 	if routeKey == "" {
 		return true
@@ -1596,7 +1634,7 @@ func retryRoundAvailabilityForAuthForRequest(ctx context.Context, auth *Auth, mo
 	if modelKey != "" && len(auth.ModelStates) > 0 {
 		matchedBlocked := false
 		for stateModel, state := range auth.ModelStates {
-			if state == nil || canonicalModelLookupKey(stateModel) != modelKey {
+			if state == nil || modelStateLookupKey(auth, stateModel) != modelKey {
 				continue
 			}
 			if state.Status == StatusDisabled {
@@ -1644,7 +1682,7 @@ func hasLiveQuotaCooldown(auth *Auth, model string, now time.Time) bool {
 		if state == nil {
 			continue
 		}
-		if canonicalModelLookupKey(stateModel) == modelKey && quotaLive(state.Quota) {
+		if modelStateLookupKey(auth, stateModel) == modelKey && quotaLive(state.Quota) {
 			return true
 		}
 	}
@@ -1862,7 +1900,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	if status == http.StatusOK {
 		return 0, false
 	}
-	if isRequestInvalidError(err) || isRequestStopError(err) || isSchedulerRejectError(err) {
+	if isRequestInvalidError(err) || isRequestStopError(err) || isSchedulerRejectError(err) || isCredentialTerminatedError(err) {
 		return 0, false
 	}
 	if m.HomeEnabled() {
@@ -1999,6 +2037,9 @@ func isRequestRetryRoundError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if !isCredentialScopedError(err) && strings.EqualFold(strings.TrimSpace(errorCodeFromError(err)), transientTransportErrorCode) {
+		return true
+	}
 	return isCredentialRetryRoundStatus(statusCodeFromError(err)) || isTransientTransportError(err)
 }
 
@@ -2051,6 +2092,19 @@ func (m *Manager) List() []*Auth {
 		list = append(list, auth.Clone())
 	}
 	return list
+}
+
+// IDsByProvider returns matching credential IDs without cloning unrelated auth state.
+func (m *Manager) IDsByProvider(provider string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var ids []string
+	for id, auth := range m.auths {
+		if auth.Provider == provider {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // GetByID retrieves an auth entry by its ID.
@@ -2310,7 +2364,9 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 	if auth == nil || strings.TrimSpace(routeModel) == "" {
 		return false
 	}
-	return !sameCanonicalModelKey(m.selectionModelForAuth(auth, routeModel), routeModel)
+	// The scheduler's base-model shards cannot distinguish exact Copilot routes
+	// that contain suffixes from requests that fall back to their base route.
+	return m.usesPublishedCopilotRoutes(auth) || !sameCanonicalModelKey(m.selectionModelForAuth(auth, routeModel), routeModel)
 }
 
 func requestAwareCredSelectionRequired(ctx context.Context, auth *Auth, clientHeaders ...http.Header) bool {
@@ -2369,7 +2425,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		affinityCandidates = make([]*Auth, 0, len(m.auths))
 	}
 	for _, candidate := range m.auths {
-		if candidate == nil || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey || candidate.Disabled {
+		if isAuthDisabled(candidate) || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey {
 			continue
 		}
 		if !trackPinnedAccounting && pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -2696,7 +2752,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if strings.TrimSpace(model) != "" || targetKey == "codex" {
 		m.mu.RLock()
 		for _, candidate := range m.auths {
-			if candidate == nil || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey || candidate.Disabled {
+			if isAuthDisabled(candidate) || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey {
 				continue
 			}
 			if !eligibility.allows(candidate) {
@@ -2774,7 +2830,7 @@ func (m *Manager) HasAlternativeTargetForModel(ctx context.Context, providers []
 	defer m.mu.RUnlock()
 	candidates := make([]*Auth, 0, len(m.auths))
 	for _, candidate := range m.auths {
-		if candidate == nil || candidate.Disabled {
+		if isAuthDisabled(candidate) {
 			continue
 		}
 		candidateID := strings.TrimSpace(candidate.ID)
@@ -2860,7 +2916,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		affinityCandidates = make([]*Auth, 0, len(m.auths))
 	}
 	for _, candidate := range m.auths {
-		if candidate == nil || candidate.Disabled {
+		if isAuthDisabled(candidate) {
 			continue
 		}
 		if !trackPinnedAccounting && pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -2869,7 +2925,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if !eligibility.allows(candidate) {
 			continue
 		}
-		providerKey := executorKeyFromAuth(candidate)
+		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
 		if providerKey == "" {
 			continue
 		}
@@ -3006,7 +3062,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if selected == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
-	providerKey := executorKeyFromAuth(selected)
+	providerKey := canonicalSchedulingProvider(executorKeyFromAuth(selected))
 	executor, okExecutor := m.Executor(providerKey)
 	if !okExecutor {
 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
@@ -3064,7 +3120,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if strings.TrimSpace(model) != "" || hasCodex {
 		m.mu.RLock()
 		for _, candidate := range m.auths {
-			if candidate == nil || candidate.Disabled {
+			if isAuthDisabled(candidate) {
 				continue
 			}
 			if _, ok := providerSet[canonicalSchedulingProvider(executorKeyFromAuth(candidate))]; !ok {
@@ -3196,7 +3252,7 @@ func (m *Manager) earliestPoolCooldownForModelAt(ctx context.Context, providers 
 	totalCandidates := 0
 	cooling := 0
 	for _, candidate := range m.auths {
-		if candidate == nil || candidate.Disabled {
+		if isAuthDisabled(candidate) {
 			continue
 		}
 		if excludeZeroWeight && authWeight(candidate) <= 0 {
@@ -3317,10 +3373,13 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	coolingSummaries := make([]string, 0)
 	totalCandidates := 0
 	for _, candidate := range m.auths {
-		if candidate == nil || candidate.Disabled {
+		if isAuthDisabled(candidate) {
 			continue
 		}
-		providerKey := executorKeyFromAuth(candidate)
+		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
+		if providerKey == "" {
+			continue
+		}
 		if len(providerSet) > 0 {
 			if _, ok := providerSet[providerKey]; !ok {
 				continue

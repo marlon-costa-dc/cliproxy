@@ -1,11 +1,11 @@
 package config
 
 import (
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/MoeForge/moego/regexp"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
 	log "github.com/sirupsen/logrus"
 )
@@ -178,7 +178,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if name == "" || alias == "" {
 				continue
 			}
-			if strings.EqualFold(name, alias) {
+			if name == alias {
 				continue
 			}
 			pairKey := strings.ToLower(name) + "\x00" + strings.ToLower(alias)
@@ -408,6 +408,7 @@ func sanitizeMetaKeyEntries(entries []MetaKey) []MetaKey {
 			continue
 		}
 		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.QuotaDomain = strings.TrimSpace(e.QuotaDomain)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		if e.BaseURL == "" {
 			e.BaseURL = "https://api.meta.ai/v1"
@@ -428,6 +429,7 @@ func normalizeCodexKeyEntries(entries []CodexKey, dropEmptyBaseURL bool) []Codex
 	for i := range entries {
 		e := entries[i]
 		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.QuotaDomain = strings.TrimSpace(e.QuotaDomain)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)

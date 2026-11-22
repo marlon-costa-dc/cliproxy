@@ -2,7 +2,6 @@ package pluginhost
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -10,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -92,10 +92,10 @@ func TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader(t *testing.T) {
 	if errExec == nil {
 		t.Fatal("authMgr.Execute returned nil error")
 	}
-	// The ABI forwards the original 7s hint, but the proxy's terminal response
-	// reflects its enforced 10s minimum pool cooldown.
+	// MarkResult clamps the 7s Retry-After hint up to the 10s quota cooldown
+	// floor for both the model state and the terminal pool Retry-After header.
 	if got := coreauth.SafeResponseHeaders(errExec).Get("Retry-After"); got != "10" {
-		t.Fatalf("terminal Retry-After = %q, want 10 (pool cooldown floor)", got)
+		t.Fatalf("SafeResponseHeaders(errExec) Retry-After = %q, want 10", got)
 	}
 	updated, okAuth := authMgr.GetByID(authID)
 	if !okAuth || updated == nil {

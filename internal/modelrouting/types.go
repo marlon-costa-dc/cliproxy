@@ -4,6 +4,8 @@
 // executes it, but never re-ranks candidates or invents catalog facts.
 package modelrouting
 
+import "github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
+
 const (
 	ProtocolOpenAIChat        = "openai_chat"
 	ProtocolOpenAIResponses   = "openai_responses"
@@ -19,6 +21,9 @@ type Config struct {
 	Aliases          []Alias       `yaml:"aliases" json:"aliases"`
 	DirectModels     []DirectModel `yaml:"direct-models" json:"direct-models"`
 	FailurePolicy    FailurePolicy `yaml:"failure-policy" json:"failure-policy"`
+	// LocalRoutes are consumer routes to locally served runtime models; AI Hub
+	// omits the list when it publishes none.
+	LocalRoutes []LocalRoute `yaml:"local-routes,omitempty" json:"local-routes,omitempty"`
 }
 
 // ModelKey identifies one canonical catalog model. A route provider is deliberately
@@ -118,6 +123,9 @@ type DirectRoute struct {
 	Pricing                *Pricing        `yaml:"pricing" json:"pricing"`
 	Selectable             bool            `yaml:"selectable" json:"selectable"`
 	SelectionReason        string          `yaml:"selection-reason" json:"selection-reason"`
+	// RateLimit paces every request executed through this route, whichever
+	// alias or direct selector reached it. Omitted applies no route limit.
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 }
 
 // Restriction explains a config-owned eligibility decision.

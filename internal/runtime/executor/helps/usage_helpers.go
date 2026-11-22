@@ -26,6 +26,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -167,6 +168,40 @@ func (r *UsageReporter) SetStream(stream bool) {
 		return
 	}
 	r.stream = stream
+}
+
+// PluginExecutorType returns the canonical usage executor label for a plugin ID.
+func PluginExecutorType(pluginID string) string {
+	if id := strings.TrimSpace(pluginID); id != "" {
+		return "plugin:" + id
+	}
+	return ""
+}
+
+// ApplyPluginExecutorAttribution populates executorType and optional upstream credential
+// attribution fields for direct plugin executor dispatches and auth-backed plugin executors.
+// Already-populated AuthIndex and AuthType values (e.g. from coreauth.Auth) are preserved.
+func (r *UsageReporter) ApplyPluginExecutorAttribution(executorPluginID string, attr *pluginapi.UsageAttribution) {
+	if r == nil {
+		return
+	}
+	if r.executorType == "" {
+		if executorType := PluginExecutorType(executorPluginID); executorType != "" {
+			r.executorType = executorType
+		}
+	}
+	if attr == nil {
+		return
+	}
+	if v := strings.TrimSpace(attr.AuthIndex); v != "" && r.authIndex == "" {
+		r.authIndex = v
+	}
+	if v := strings.TrimSpace(attr.AuthType); v != "" && r.authType == "" {
+		r.authType = v
+	}
+	if v := strings.TrimSpace(attr.Source); v != "" {
+		r.source = v
+	}
 }
 
 // SetSessionHierarchy sets the explicit session and parent session identifiers.
@@ -347,9 +382,18 @@ func (r *UsageReporter) ResponseModel() string {
 	return r.responseModel
 }
 
+type usageExecutorTypeProvider interface {
+	UsageExecutorType() string
+}
+
 func ExecutorTypeName(executor any) string {
 	if executor == nil {
 		return ""
+	}
+	if custom, ok := executor.(usageExecutorTypeProvider); ok && custom != nil {
+		if name := strings.TrimSpace(custom.UsageExecutorType()); name != "" {
+			return name
+		}
 	}
 	executorType := reflect.TypeOf(executor)
 	for executorType.Kind() == reflect.Pointer {
@@ -3436,35 +3480,6 @@ func parseGeminiFamilyUsageDetail(node ojson.Result) usage.Detail {
 		}
 	}
 	return detail
-}
-
-func hasGeminiFamilyUsageTokenFields(node ojson.Result) bool {
-	return node.Get("promptTokenCount").Exists() ||
-		node.Get("candidatesTokenCount").Exists() ||
-		node.Get("thoughtsTokenCount").Exists() ||
-		node.Get("totalTokenCount").Exists() ||
-		node.Get("cachedContentTokenCount").Exists()
-}
-
-func ParseGeminiCLIUsage(data []byte) usage.Detail {
-	root := ojson.ParseBytes(data)
-	node := firstExistingUsageNode(root, "response.usageMetadata", "response.usage_metadata", "usageMetadata", "usage_metadata")
-	if !node.Exists() {
-		return usage.Detail{}
-	}
-	return parseGeminiFamilyUsageDetail(node)
-}
-
-func ParseGeminiCLIStreamUsage(line []byte) (usage.Detail, bool) {
-	payload := jsonPayload(line)
-	if len(payload) == 0 || !ojson.ValidBytes(payload) {
-		return usage.Detail{}, false
-	}
-	node := firstExistingUsageNode(ojson.ParseBytes(payload), "response.usageMetadata", "response.usage_metadata", "usageMetadata", "usage_metadata")
-	if !node.Exists() || !hasGeminiFamilyUsageTokenFields(node) {
-		return usage.Detail{}, false
-	}
-	return parseGeminiFamilyUsageDetail(node), true
 }
 
 func applyGeminiPayloadArtifacts(detail *usage.Detail, root ojson.Result) {

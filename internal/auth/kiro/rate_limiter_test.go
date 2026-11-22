@@ -16,17 +16,14 @@ func TestNewRateLimiter(t *testing.T) {
 	if rl == nil {
 		t.Fatal("expected non-nil RateLimiter")
 	}
-	if rl.states == nil {
-		t.Error("expected non-nil states map")
+	if rl.cfg.MinInterval != DefaultMinTokenInterval {
+		t.Errorf("expected minTokenInterval %v, got %v", DefaultMinTokenInterval, rl.cfg.MinInterval)
 	}
-	if rl.minTokenInterval != DefaultMinTokenInterval {
-		t.Errorf("expected minTokenInterval %v, got %v", DefaultMinTokenInterval, rl.minTokenInterval)
+	if rl.cfg.MaxInterval != DefaultMaxTokenInterval {
+		t.Errorf("expected maxTokenInterval %v, got %v", DefaultMaxTokenInterval, rl.cfg.MaxInterval)
 	}
-	if rl.maxTokenInterval != DefaultMaxTokenInterval {
-		t.Errorf("expected maxTokenInterval %v, got %v", DefaultMaxTokenInterval, rl.maxTokenInterval)
-	}
-	if rl.dailyMaxRequests != DefaultDailyMaxRequests {
-		t.Errorf("expected dailyMaxRequests %d, got %d", DefaultDailyMaxRequests, rl.dailyMaxRequests)
+	if rl.cfg.DailyMaxRequests != DefaultDailyMaxRequests {
+		t.Errorf("expected dailyMaxRequests %d, got %d", DefaultDailyMaxRequests, rl.cfg.DailyMaxRequests)
 	}
 	if rl.enabled {
 		t.Error("expected rate limiter to be disabled by default")
@@ -48,14 +45,17 @@ func TestNewRateLimiterWithConfig(t *testing.T) {
 	}
 
 	rl := NewRateLimiterWithConfig(cfg)
-	if rl.minTokenInterval != 5*time.Second {
-		t.Errorf("expected minTokenInterval 5s, got %v", rl.minTokenInterval)
+	if rl.cfg.MinInterval != 5*time.Second {
+		t.Errorf("expected minTokenInterval 5s, got %v", rl.cfg.MinInterval)
 	}
-	if rl.maxTokenInterval != 15*time.Second {
-		t.Errorf("expected maxTokenInterval 15s, got %v", rl.maxTokenInterval)
+	if rl.cfg.MaxInterval != 15*time.Second {
+		t.Errorf("expected maxTokenInterval 15s, got %v", rl.cfg.MaxInterval)
 	}
-	if rl.dailyMaxRequests != 100 {
-		t.Errorf("expected dailyMaxRequests 100, got %d", rl.dailyMaxRequests)
+	if rl.cfg.DailyMaxRequests != 100 {
+		t.Errorf("expected dailyMaxRequests 100, got %d", rl.cfg.DailyMaxRequests)
+	}
+	if rl.suspendCooldown != 12*time.Hour {
+		t.Errorf("expected suspendCooldown 12h, got %v", rl.suspendCooldown)
 	}
 	if !rl.enabled {
 		t.Error("expected rate limiter to be enabled by config")
@@ -70,11 +70,26 @@ func TestNewRateLimiterWithConfig_PartialConfig(t *testing.T) {
 	}
 
 	rl := NewRateLimiterWithConfig(cfg)
-	if rl.minTokenInterval != 5*time.Second {
-		t.Errorf("expected minTokenInterval 5s, got %v", rl.minTokenInterval)
+	if rl.cfg.MinInterval != 5*time.Second {
+		t.Errorf("expected minTokenInterval 5s, got %v", rl.cfg.MinInterval)
 	}
-	if rl.maxTokenInterval != 6*time.Second {
-		t.Errorf("expected maxTokenInterval to clamp to 6s, got %v", rl.maxTokenInterval)
+	if rl.cfg.MaxInterval != 6*time.Second {
+		t.Errorf("expected maxTokenInterval to clamp to 6s, got %v", rl.cfg.MaxInterval)
+	}
+}
+
+func TestIsTokenAvailable_DailyCap(t *testing.T) {
+	enabled := true
+	rl := NewRateLimiterWithConfig(RateLimiterConfig{Enabled: &enabled, MinTokenInterval: time.Millisecond, MaxTokenInterval: 2 * time.Millisecond, DailyMaxRequests: 2})
+	for range 3 {
+		rl.WaitForToken("token1")
+	}
+	state := rl.GetTokenState("token1")
+	if state == nil || state.DailyRequests != 3 || state.RequestCount != 3 {
+		t.Fatalf("state after three waits = %+v, want three requests (the cap never blocks a wait)", state)
+	}
+	if rl.IsTokenAvailable("token1") {
+		t.Error("expected token at its daily cap to be unavailable")
 	}
 }
 
@@ -209,45 +224,43 @@ func TestResetSuspension_NonExistent(t *testing.T) {
 	rl.ResetSuspension("nonexistent")
 }
 
-func TestCalculateBackoff_ZeroFailCount(t *testing.T) {
-	rl := NewRateLimiter()
-	backoff := rl.calculateBackoff(0)
-	if backoff != 0 {
-		t.Errorf("expected 0 backoff for 0 fails, got %v", backoff)
-	}
-}
-
-func TestCalculateBackoff_Exponential(t *testing.T) {
-	cfg := RateLimiterConfig{
+func TestMarkTokenFailed_ExponentialBackoff(t *testing.T) {
+	enabled := true
+	rl := NewRateLimiterWithConfig(RateLimiterConfig{
+		Enabled:           &enabled,
 		BackoffBase:       1 * time.Minute,
 		BackoffMax:        60 * time.Minute,
 		BackoffMultiplier: 2.0,
 		JitterPercent:     0.3,
-	}
-	rl := NewRateLimiterWithConfig(cfg)
+	})
 
-	backoff1 := rl.calculateBackoff(1)
+	rl.MarkTokenFailed("token1")
+	backoff1 := time.Until(rl.GetTokenState("token1").CooldownEnd)
 	if backoff1 < 40*time.Second || backoff1 > 80*time.Second {
 		t.Errorf("expected ~1min (with jitter) for fail 1, got %v", backoff1)
 	}
 
-	backoff2 := rl.calculateBackoff(2)
+	rl.MarkTokenFailed("token2")
+	rl.MarkTokenFailed("token2")
+	backoff2 := time.Until(rl.GetTokenState("token2").CooldownEnd)
 	if backoff2 < 80*time.Second || backoff2 > 160*time.Second {
 		t.Errorf("expected ~2min (with jitter) for fail 2, got %v", backoff2)
 	}
 }
 
-func TestCalculateBackoff_MaxCap(t *testing.T) {
-	cfg := RateLimiterConfig{
+func TestMarkTokenFailed_BackoffMaxCap(t *testing.T) {
+	enabled := true
+	rl := NewRateLimiterWithConfig(RateLimiterConfig{
+		Enabled:           &enabled,
 		BackoffBase:       1 * time.Minute,
 		BackoffMax:        10 * time.Minute,
 		BackoffMultiplier: 2.0,
-		JitterPercent:     0,
-	}
-	rl := NewRateLimiterWithConfig(cfg)
+	})
 
-	backoff := rl.calculateBackoff(10)
-	if backoff > 10*time.Minute {
+	for range 10 {
+		rl.MarkTokenFailed("token1")
+	}
+	if backoff := time.Until(rl.GetTokenState("token1").CooldownEnd); backoff > 10*time.Minute {
 		t.Errorf("expected backoff capped at 10min, got %v", backoff)
 	}
 }
@@ -297,23 +310,4 @@ func TestRateLimiter_ConcurrentAccess(t *testing.T) {
 	}
 
 	wg.Wait()
-}
-
-func TestCalculateInterval_WithinRange(t *testing.T) {
-	cfg := RateLimiterConfig{
-		MinTokenInterval: 10 * time.Second,
-		MaxTokenInterval: 30 * time.Second,
-		JitterPercent:    0.3,
-	}
-	rl := NewRateLimiterWithConfig(cfg)
-
-	minAllowed := 7 * time.Second
-	maxAllowed := 40 * time.Second
-
-	for i := 0; i < 100; i++ {
-		interval := rl.calculateInterval()
-		if interval < minAllowed || interval > maxAllowed {
-			t.Errorf("interval %v outside expected range [%v, %v]", interval, minAllowed, maxAllowed)
-		}
-	}
 }

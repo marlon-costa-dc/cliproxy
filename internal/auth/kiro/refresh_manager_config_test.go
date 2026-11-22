@@ -89,16 +89,16 @@ func TestInitRateLimiterConfig_AppliesAndResets(t *testing.T) {
 	if !rl.enabled {
 		t.Fatal("expected rate limiter to be enabled")
 	}
-	if rl.minTokenInterval != 5*time.Second || rl.maxTokenInterval != 7*time.Second {
-		t.Fatalf("unexpected interval config: min=%v max=%v", rl.minTokenInterval, rl.maxTokenInterval)
+	if rl.cfg.MinInterval != 5*time.Second || rl.cfg.MaxInterval != 7*time.Second {
+		t.Fatalf("unexpected interval config: min=%v max=%v", rl.cfg.MinInterval, rl.cfg.MaxInterval)
 	}
 
 	InitRateLimiterConfig(&config.Config{})
 	if rl.enabled {
 		t.Fatal("expected rate limiter to reset to disabled")
 	}
-	if rl.minTokenInterval != DefaultMinTokenInterval || rl.maxTokenInterval != DefaultMaxTokenInterval {
-		t.Fatalf("expected defaults after reset, got min=%v max=%v", rl.minTokenInterval, rl.maxTokenInterval)
+	if rl.cfg.MinInterval != DefaultMinTokenInterval || rl.cfg.MaxInterval != DefaultMaxTokenInterval {
+		t.Fatalf("expected defaults after reset, got min=%v max=%v", rl.cfg.MinInterval, rl.cfg.MaxInterval)
 	}
 
 	rl.MarkTokenFailed("disabled-token")

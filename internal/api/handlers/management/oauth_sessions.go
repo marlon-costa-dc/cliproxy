@@ -1,7 +1,6 @@
 package management
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
@@ -418,13 +418,7 @@ func (s *oauthSessionStore) IsPending(state, provider string) bool {
 }
 
 func isOAuthSessionPendingStatus(session oauthSession) bool {
-	if session.Status == "" {
-		return true
-	}
-	if !strings.EqualFold(session.Provider, "kiro") {
-		return false
-	}
-	return strings.HasPrefix(session.Status, "device_code|") || strings.HasPrefix(session.Status, "auth_url|")
+	return session.Status == ""
 }
 
 // BeginSave atomically claims a pending OAuth session for credential

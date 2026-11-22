@@ -12,6 +12,21 @@ Send `Authorization: Bearer <management-key>` or `X-Management-Key: <management-
 OAuth callbacks validate a pending login state and do not require a management-key
 header. Home mode disables local management endpoints for both versions.
 
+Authenticated management responses include `X-CPA-SERVER-ID` when an identity
+is available, including on v0 routes that use the management key. Cross-origin
+clients can read the header. Authentication failures, CORS preflights, OAuth
+callbacks without key authentication, and non-management routes do not expose it.
+
+`GET /v8/management/server/server-id` returns the active server identity:
+
+```json
+{"server-id":"20fb88e4-73ab-44db-b5b5-4e7120ba3368"}
+```
+
+The endpoint and its header use the same authenticated request snapshot. The
+identity is distinct from the Home node identifier: Home config updates do not
+replace the local runtime identity.
+
 ## Configuration endpoints
 
 All paths below are relative to `/v8/management`.
@@ -26,6 +41,28 @@ GET renders the persisted configuration in the v8 layout without migrating the
 file or adding omitted runtime defaults. Successful v8 configuration writes save
 the latest layout; reads and rejected writes leave the file unchanged.
 Historical v8 paths and request bodies remain accepted as aliases.
+
+`server.server-id` is a nonzero, hyphenated UUID. Successful v8 writes trim and
+lowercase an explicit UUID. If the resulting identity is missing, null, blank,
+or invalid, the write saves a fresh UUIDv4. For example, deleting
+`/config/server/server-id` rotates the identity, while an unrelated PATCH keeps
+an existing valid ID. Include the current ID when using a full replacement if
+clients should continue to see the same deployment. Successful writes return
+`status`, `config-version`, and the saved `server-id`; the response header matches
+the saved value. A read-only configuration without an explicit ID can show its
+process-local ID in the read view without persisting it. Set an explicit UUID
+if a read-only deployment needs the same ID across restarts.
+
+Only the first YAML document supplies runtime settings. JSON and path writes
+preserve the remaining documents byte-for-byte; YAML PUT replaces the complete
+stream and preserves the trailing documents supplied in that request. Invalid
+YAML in any document rejects the write without modifying the file.
+
+Configuration GET responses and successful writes return a strong `ETag` for
+the exact stored bytes. Use it as `If-Match` to guard against lost updates. A
+stale conditional write returns `412 Precondition Failed`; an unconditional
+write whose file snapshot changes during processing returns `409 Conflict`.
+Re-read the configuration before retrying either response.
 
 JSON writes accept the value directly, without a `{ "value": ... }` envelope.
 PUT replaces its target. PATCH merges objects and replaces lists and scalars.
@@ -130,6 +167,7 @@ retain the corresponding business operation's fields.
 | Path | Methods | Description |
 | --- | --- | --- |
 | `/config/upstream/<provider>` | GET, PUT, PATCH, DELETE | Manage shared provider settings. |
+| `/server/server-id` | GET | Get the active deployment UUID. |
 | `/server/latest-version` | GET | Get latest release information. |
 | `/requests/api-call` | POST | Make an authenticated upstream call. |
 | `/routing/cooldown/reset` | POST | Clear credential cooldown. |
@@ -164,7 +202,9 @@ retain the corresponding business operation's fields.
 
 The login URL is shared by all providers. Set the required `provider` query
 parameter to `claude`, `codex`, `antigravity`, `kimi`, `kimi-ai`, `xai`, `devin`,
-`meta`, or a registered plugin provider ID. For example:
+`meta`, `qoder`, `kilo`, `cursor`, `gitlab` (OAuth; pass `client_id`),
+`github` (alias `github-copilot`), `kiro` (`method=aws` device flow by default,
+or `method=google`/`method=github`), or a registered plugin provider ID. For example:
 
 ```http
 GET /v8/management/oauth/auth-url?provider=codex
@@ -180,7 +220,9 @@ consumption; operators may explicitly opt in by passing `verify: true` (and opti
 `verify_model`) when starting the targeted login, or trigger verification explicitly
 after adoption via `POST /v8/management/credentials/verify` (`{"name":"<file>","model":"<optional-model>"}`).
 The login response includes the authorization URL and a session `state` (plus `target_auth_id`
-when targeted). Use that state for status queries and cancellation.
+when targeted). Device flows add `flow: "device"` and, when the provider issues
+them, `user_code` and `expires_in` (seconds). Use that state for status queries
+and cancellation; cancelling a session also stops its background poll.
 
 Callbacks accept `provider`, `state`, `code`, and `error` as GET query parameters
 or POST JSON fields. POST also accepts `redirect_url` containing the complete
@@ -289,7 +331,9 @@ operations in this release.
 
 ## v0 compatibility
 
-The `/v0/management` endpoints keep their original paths and payloads, including
+The `/v0/management` endpoints keep their original paths and payloads. In
+particular, `GET /v0/management/config` does not add `server-id` to its JSON.
+Existing contracts include
 provider-specific OAuth login URLs, callbacks, status queries, and cancellation.
 For example, `GET /v0/management/codex-auth-url` and
 `GET /v8/management/oauth/auth-url?provider=codex` start the same login flow.
@@ -306,7 +350,11 @@ files in their original layout; existing v8 files are saved in the latest v8
 layout. `PUT /v0/management/config.yaml` still replaces the complete file and
 accepts legacy, new, or mixed layouts, normalizing v8 documents on save.
 
-Plugin OAuth uses the shared v8 login endpoint. Other plugin-defined HTTP
+Plugin OAuth uses the shared v8 login endpoint. Device authorization plugins
+can set `AuthLoginStartResponse.UserCode` to expose a public `user_code` and
+`flow: "device"`; the response also includes `expires_in` when a future expiry
+is available. Private polling material in `Metadata` stays on the server.
+Other plugin-defined HTTP
 extensions retain their declared `/v0/management` routes.
 
 ## OpenCode gateway keys
@@ -314,7 +362,53 @@ extensions retain their declared `/v0/management` routes.
 Configure Zen and Go credentials in `api-keys.opencode` and
 `api-keys.opencode-go`, respectively, using the same grouped key layout as
 other v8 providers. The gateway supplies the default base URL when omitted.
-Client access keys remain under `access.api-keys`.
+Client access keys remain under `access.api-keys`. A key may declare
+`quota-domain` (as on every Codex-style key family) to name its quota pool;
+omitted, it draws from the provider pool `opencode` or `opencode-go`.
+
+Config keys are not credential files, so `GET /credentials` does not list them.
+`GET /observability/usage/api-keys` reports each key, grouped by provider and
+keyed by `base_url|api_key`, with a `state` object: the routing inventory's
+credential view of the whole key (`credential_ref`, `quota_domain`, `health`,
+`quota` with `status`, `remaining` and `resets_at`, and `suspension` with a
+local `reason` such as `cooldown` or `disabled` and its `resumes_at`). Provider
+error text is never included. `/v0/management/api-key-usage` keeps its original
+payload without `state`.
+
+## Local rate limits
+
+Any key entry of an `api-keys` family (gemini, interactions, vertex, codex,
+claude, xai, meta, opencode, opencode-go and openai-compatibility keys) and any
+published `model-routing` direct route accepts a `rate-limit` block. Omitted
+fields apply no limit; durations use Go syntax (`500ms`, `2s`).
+
+| Field | Meaning |
+| --- | --- |
+| `min-interval` | Minimum spacing between two request starts. |
+| `max-interval` | Randomizes the spacing up to this value (default `min-interval`). |
+| `jitter-percent` | Varies each spacing by up to this fraction (0 to 1). |
+| `daily-max-requests` | Caps request starts per UTC day. |
+| `max-concurrency` | Requests in flight; further requests queue instead of failing (`1` serializes). |
+| `backoff-base` | Pause after the first consecutive upstream failure. |
+| `backoff-max` | Caps the failure pause. |
+| `backoff-multiplier` | Pause growth per consecutive failure (default 2). |
+
+The auth conductor admits each inference request (non-streaming and
+streaming) before it reaches the upstream: first through the limit of the
+published route it executes, then through the limit of the selected
+credential. A streaming request keeps its slot until the stream ends. A key at
+its daily cap is skipped for that request (another credential may serve it;
+with none left the request fails with `429` and `Retry-After`); a route at its
+daily cap fails with `429 route_rate_limited`, which the routing failure policy
+may classify for failover. Invalid blocks are rejected at config load and at
+routing publication. `kiro-rate-limit` runs on the same limiter.
+
+The routing inventory adds `rate_limit` to each route and credential that
+configures one, and the v8 API-key usage `state` carries the key's
+`rate_limit`: the configured `min_interval_ms`, `max_interval_ms`,
+`daily_max_requests` and `max_concurrency`, plus `in_flight`, `waiting`,
+`daily_requests`, `daily_resets_at`, `next_allowed_at`, `cooldown_until` and
+`fail_count`.
 
 ## DataCosmos routing publication
 

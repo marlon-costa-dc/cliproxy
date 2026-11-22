@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/ratelimit"
 	"gopkg.in/yaml.v3"
 )
 
@@ -197,6 +198,16 @@ type ClaudeConfig struct {
 	// KV) is active, session date pins are persisted permanently and
 	// session-date-pin-days is ignored.
 	SessionDatePinDays *int `yaml:"session-date-pin-days" json:"session-date-pin-days"`
+	// OAuthIncludeCreateAPIKey controls whether new Claude OAuth authorization
+	// URLs request the org:create_api_key scope in addition to ClaudeOAuthScope.
+	// Nil defaults to true to match native Claude Code.
+	OAuthIncludeCreateAPIKey *bool `yaml:"oauth-include-create-api-key,omitempty" json:"oauth-include-create-api-key,omitempty"`
+}
+
+// OAuthIncludeCreateAPIKeyEnabled reports whether Claude OAuth authorization
+// requests should include the org:create_api_key scope.
+func (c *ClaudeConfig) OAuthIncludeCreateAPIKeyEnabled() bool {
+	return c == nil || c.OAuthIncludeCreateAPIKey == nil || *c.OAuthIncludeCreateAPIKey
 }
 
 // DefaultClaudeSessionDatePinDays is the session date pin retention applied
@@ -350,7 +361,7 @@ type AntigravityConnectionPoolConfig struct {
 	IdleConnTimeout string `yaml:"idle-conn-timeout,omitempty" json:"idle-conn-timeout,omitempty"`
 
 	// MaxIdleConnsPerHost specifies the maximum number of idle connections to retain per host per credential.
-	// Defaults to 2.
+	// Defaults to 2. Zero or negative values disable idle pooling (short-lived connection mode).
 	MaxIdleConnsPerHost *int `yaml:"max-idle-conns-per-host,omitempty" json:"max-idle-conns-per-host,omitempty"`
 }
 
@@ -732,7 +743,7 @@ func ResolveOAuthModelSetting(settings []OAuthModelSetting, modelID, metadataMod
 	return nameMatch
 }
 
-// PayloadConfig defines default and override parameter rules applied to provider payloads.
+// PayloadConfig defines parameter and text mutation rules applied to provider payloads.
 type PayloadConfig struct {
 	// Default defines rules that only set parameters when they are missing in the payload.
 	Default []PayloadRule `yaml:"default" json:"default"`
@@ -742,6 +753,8 @@ type PayloadConfig struct {
 	Override []PayloadRule `yaml:"override" json:"override"`
 	// OverrideRaw defines rules that always set raw JSON values, overwriting any existing values.
 	OverrideRaw []PayloadRule `yaml:"override-raw" json:"override-raw"`
+	// Replace defines ordered literal and Go RE2 regex replacements in selected strings.
+	Replace []PayloadReplaceRule `yaml:"replace" json:"replace"`
 	// Filter defines rules that remove parameters from the payload by JSON path.
 	Filter []PayloadFilterRule `yaml:"filter" json:"filter"`
 }
@@ -826,6 +839,9 @@ type ClaudeKey struct {
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/claude-sonnet-4").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -983,8 +999,15 @@ type CodexKey struct {
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
 
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
+
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gpt-5-codex").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// QuotaDomain identifies the quota pool for this exact credential. Omitted
+	// means the provider's pool (for example "opencode" or "opencode-go").
+	QuotaDomain string `yaml:"quota-domain,omitempty" json:"quota-domain,omitempty"`
 
 	// BaseURL is the base URL for the Codex API endpoint.
 	// If empty, the default Codex API URL will be used.
@@ -1112,6 +1135,9 @@ type GeminiKey struct {
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -1257,6 +1283,9 @@ type OpenAICompatibilityAPIKey struct {
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// RateLimit paces requests sent with this key (see ratelimit.Spec).
+	RateLimit *ratelimit.Spec `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`

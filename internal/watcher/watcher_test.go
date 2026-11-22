@@ -3,7 +3,6 @@ package watcher
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/fsnotify/fsnotify"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
@@ -987,10 +987,11 @@ func TestHandleEventConfigChangeSchedulesReload(t *testing.T) {
 		reloadCallback: func(*config.Config) { atomic.AddInt32(&reloads, 1) },
 	}
 	w.SetConfig(&config.Config{AuthDir: authDir})
+	stopConfigReloadOnCleanup(t, w)
 
 	w.handleEvent(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 
-	time.Sleep(400 * time.Millisecond)
+	waitForAppliedConfigReload(t, w)
 	if atomic.LoadInt32(&reloads) != 1 {
 		t.Fatalf("expected config change to trigger reload once, got %d", reloads)
 	}
@@ -1752,30 +1753,46 @@ func TestScheduleConfigReloadDebounces(t *testing.T) {
 		reloadCallback: func(*config.Config) { atomic.AddInt32(&reloads, 1) },
 	}
 	w.SetConfig(&config.Config{AuthDir: authDir})
+	stopConfigReloadOnCleanup(t, w)
 
 	w.scheduleConfigReload()
 	w.scheduleConfigReload()
 
-	deadline := time.Now().Add(time.Second)
+	waitForAppliedConfigReload(t, w)
+	if got := atomic.LoadInt32(&reloads); got != 1 {
+		t.Fatalf("expected single debounced reload, got %d", got)
+	}
+}
+
+// waitForAppliedConfigReload waits for the debounced reload to record its
+// applied hash. The reload loads and persists the config file, so its latency
+// depends on host load; a fixed sleep made the outcome timing-dependent.
+func waitForAppliedConfigReload(t *testing.T, w *Watcher) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		w.clientsMutex.RLock()
 		hashSet := w.lastConfigHash != ""
 		w.clientsMutex.RUnlock()
 		if hashSet {
-			break
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for debounced config reload")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
 
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected single debounced reload, got %d", reloads)
-	}
-	if got := atomic.LoadInt32(&reloads); got != 1 {
-		t.Fatalf("expected single debounced reload, got %d", got)
-	}
+// stopConfigReloadOnCleanup stops a pending debounce timer and waits for an
+// in-flight reload before t.TempDir removes the config the reload reads.
+func stopConfigReloadOnCleanup(t *testing.T, w *Watcher) {
+	t.Helper()
+	t.Cleanup(func() {
+		w.stopConfigReloadTimer()
+		w.configApplyMu.Lock()
+		defer w.configApplyMu.Unlock()
+	})
 }
 
 func TestPrepareAuthUpdatesLockedForceAndDelete(t *testing.T) {
