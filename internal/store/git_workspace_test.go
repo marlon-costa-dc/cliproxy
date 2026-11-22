@@ -23,12 +23,29 @@ func nativeStoreGit(t *testing.T, dir string, args ...string) string {
 	}
 	args = append([]string{"-C", dir}, args...)
 	cmd := exec.Command(gitPath, args...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+nativeStoreGitConfig(t), "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = append(nativeStoreGitEnviron(), "GIT_CONFIG_GLOBAL="+nativeStoreGitConfig(t), "GIT_CONFIG_NOSYSTEM=1")
 	out, errRun := cmd.CombinedOutput()
 	if errRun != nil {
 		t.Fatalf("git %v: %v\n%s", args, errRun, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// nativeStoreGitEnviron drops the command-line configuration scope a host can
+// export (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT/KEY_n/VALUE_n): it outranks
+// the isolated global file, so a host-wide `safe.bareRepository=explicit`
+// would refuse `git -C <bare remote>` in these tests.
+func nativeStoreGitEnviron() []string {
+	environ := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if name == "GIT_CONFIG_PARAMETERS" || name == "GIT_CONFIG_COUNT" ||
+			strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		environ = append(environ, entry)
+	}
+	return environ
 }
 
 // nativeStoreGitConfig isolates native Git from the host configuration. The
