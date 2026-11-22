@@ -393,18 +393,14 @@ func TestOpenCodeCatalogUsesDeclaredCanonicalIDAndAPICapability(t *testing.T) {
 	}
 }
 
-// An OpenCode usage limit states the account's reset as Retry-After; the
-// executor error carries it so the cooldown lasts until that reset instead of
-// the generic backoff, on both the unary and the stream path. The Go limit
-// covers the whole account, so it cools down the credential; the free-tier
-// limit covers only the free models and stays scoped to the model.
+// Unary and stream failures preserve the reset time and the billing pool.
 func TestOpenCodeExecutor_UsageLimitKeepsRetryAfterAndScope(t *testing.T) {
 	for _, tc := range []struct {
-		errorType        string
-		credentialScoped bool
+		errorType string
+		poolCode  string
 	}{
-		{"GoUsageLimitError", true},
-		{"FreeUsageLimitError", false},
+		{"GoUsageLimitError", clipoauth.ErrorCodeOpenCodeSubscriptionLimit},
+		{"FreeUsageLimitError", clipoauth.ErrorCodeOpenCodeFreeLimit},
 	} {
 		t.Run(tc.errorType, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -431,8 +427,8 @@ func TestOpenCodeExecutor_UsageLimitKeepsRetryAfterAndScope(t *testing.T) {
 					t.Fatalf("%s: error %v does not carry Retry-After %s", path, err, want)
 				}
 				scoped, ok := err.(interface{ IsCredentialScoped() bool })
-				if !ok || scoped.IsCredentialScoped() != tc.credentialScoped {
-					t.Fatalf("%s: credential scope = %v, want %v", path, ok && scoped.IsCredentialScoped(), tc.credentialScoped)
+				if !ok || scoped.IsCredentialScoped() || clipoauth.ResultErrorFromError(err).Code != tc.poolCode {
+					t.Fatalf("%s: expected a pool-scoped error %q, got %+v", path, tc.poolCode, clipoauth.ResultErrorFromError(err))
 				}
 			}
 			_, err := exec.Execute(context.Background(), auth, req, opts)

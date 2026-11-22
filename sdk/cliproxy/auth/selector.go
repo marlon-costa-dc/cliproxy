@@ -1366,7 +1366,31 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 			blockedReason := blockReasonNone
 			nextRetry := time.Time{}
 			for stateModel, state := range auth.ModelStates {
-				if state == nil || modelStateLookupKey(auth, stateModel) != modelKey {
+				if state == nil {
+					continue
+				}
+				if modelStateLookupKey(auth, stateModel) != modelKey {
+					if state.LastError == nil || !state.Quota.Exceeded || !state.Quota.NextRecoverAt.After(now) {
+						continue
+					}
+					switch state.LastError.Code {
+					case ErrorCodeOpenCodeFreeLimit:
+						if auth.ModelQuotaDomain(model) == auth.RoutingQuotaDomain() {
+							continue
+						}
+					case ErrorCodeOpenCodeSubscriptionLimit:
+						if auth.Provider != "opencode-go" || auth.ModelQuotaDomain(model) != auth.RoutingQuotaDomain() {
+							continue
+						}
+					default:
+						continue
+					}
+					// Only the pool's reset propagates. A sibling's independent
+					// suspension or transport cooldown belongs to that model.
+					if !blocked || state.Quota.NextRecoverAt.After(nextRetry) {
+						blocked, blockedReason, nextRetry = true, blockReasonCooldown, state.Quota.NextRecoverAt
+					}
+					matched = true
 					continue
 				}
 				matched = true

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -44,6 +45,28 @@ func NewOpenCodeExecutor(id string) *OpenCodeExecutor {
 	return &OpenCodeExecutor{id: id, gateway: gateway}
 }
 
+// Match exact JSON zero, including scientific notation, without rounding a tiny price to zero.
+var zeroCatalogPrice = regexp.MustCompile(`^-?0(\.0+)?([eE][+-]?[0-9]+)?$`)
+
+type openCodeTextRate struct {
+	Price     json.Number                `json:"price"`
+	Cache     map[string]json.RawMessage `json:"cache"`
+	Overrides []json.RawMessage          `json:"overrides"`
+}
+
+func (rate openCodeTextRate) free() bool {
+	// Conditional and tiered rates require separate qualification.
+	if !zeroCatalogPrice.MatchString(rate.Price.String()) || len(rate.Overrides) > 0 {
+		return false
+	}
+	for _, price := range rate.Cache {
+		if !zeroCatalogPrice.Match(price) {
+			return false
+		}
+	}
+	return true
+}
+
 // FetchOpenCodeModels joins the gateway's explicit model identity to routes
 // whose wire protocol this executor supports. The public catalog does not
 // prove account availability; each credential still requires inference.
@@ -75,9 +98,15 @@ func FetchOpenCodeModels(ctx context.Context, auth *clipoauth.Auth, cfg *config.
 	}
 	var catalog struct {
 		Data []struct {
-			ID          string                     `json:"id"`
-			CanonicalID string                     `json:"canonical_id"`
-			API         map[string]json.RawMessage `json:"api"`
+			ID          string `json:"id"`
+			CanonicalID string `json:"canonical_id"`
+			Cost        struct {
+				Text struct {
+					Input  openCodeTextRate `json:"input"`
+					Output openCodeTextRate `json:"output"`
+				} `json:"text"`
+			} `json:"cost"`
+			API map[string]json.RawMessage `json:"api"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &catalog); err != nil {
@@ -106,6 +135,7 @@ func FetchOpenCodeModels(ctx context.Context, auth *clipoauth.Auth, cfg *config.
 		if _, supported := row.API[apiName]; !supported {
 			continue
 		}
+		model.FreeTextQuota = row.Cost.Text.Input.free() && row.Cost.Text.Output.free()
 		if row.CanonicalID != "" && len(model.Protocols) > 0 {
 			owner, canonical, ok := strings.Cut(row.CanonicalID, "/")
 			if !ok || owner == "" || canonical == "" || strings.TrimSpace(row.CanonicalID) != row.CanonicalID {
@@ -539,19 +569,23 @@ func authAccountInfo(auth *clipoauth.Auth) (string, string, string, string) {
 	return auth.ID, auth.Label, authType, authValue
 }
 
-// openCodeAccountLimitError is the usage limit OpenCode applies to the whole
-// account (the Go weekly or monthly limit); FreeUsageLimitError covers only
-// the free models and stays scoped to the model that answered it.
-const openCodeAccountLimitError = "GoUsageLimitError"
+// An OpenCode usage limit belongs to its billing pool on the credential.
+type openCodeUsageLimit struct {
+	statusErr
+	pool string
+}
 
-// newOpenCodeStatusError keeps the provider's Retry-After, so the cooldown
-// lasts until the account's stated reset (about 4 h for a free-tier limit,
-// days for a Go one), and an account-wide limit cools the credential down for
-// every model it serves instead of only the model that answered.
-func newOpenCodeStatusError(status int, headers http.Header, body []byte) statusErr {
+func (e openCodeUsageLimit) ErrorCode() string { return e.pool }
+
+func newOpenCodeStatusError(status int, headers http.Header, body []byte) error {
 	err := newOpenAICompatStatusError(status, headers, body)
-	if status == http.StatusTooManyRequests && ojson.GetBytesNoCopy(body, "error.type").String() == openCodeAccountLimitError {
-		err.credentialScoped = true
+	if status == http.StatusTooManyRequests {
+		switch ojson.GetBytesNoCopy(body, "error.type").String() {
+		case "GoUsageLimitError":
+			return openCodeUsageLimit{err, clipoauth.ErrorCodeOpenCodeSubscriptionLimit}
+		case "FreeUsageLimitError":
+			return openCodeUsageLimit{err, clipoauth.ErrorCodeOpenCodeFreeLimit}
+		}
 	}
 	return err
 }

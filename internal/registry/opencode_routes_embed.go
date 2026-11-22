@@ -13,26 +13,8 @@ var embeddedOpenCodeRoutesJSON []byte
 
 // opencodeRouteDoc mirrors opencode_routes.json.
 type opencodeRouteDoc struct {
-	Zen  map[string]string            `json:"zen"`
-	Go   map[string]string            `json:"go"`
-	Free map[string]map[string]string `json:"free"`
-}
-
-var openCodeFreeRoutes map[string]map[string]string
-
-// OpenCodeFreeModel reports zero-priced executable routes from the gateway catalog.
-func OpenCodeFreeModel(provider, model string) bool {
-	gateway := ""
-	switch provider {
-	case "opencode":
-		gateway = "zen"
-	case "opencode-go":
-		gateway = "go"
-	default:
-		return false
-	}
-	_, ok := openCodeFreeRoutes[gateway][model]
-	return ok
+	Zen map[string]string `json:"zen"`
+	Go  map[string]string `json:"go"`
 }
 
 func loadOpenCodeRoutes() {
@@ -43,12 +25,6 @@ func loadOpenCodeRoutes() {
 	}
 	openCodeRoutes["zen"] = normalizeRouteMap(doc.Zen)
 	openCodeRoutes["go"] = normalizeRouteMap(doc.Go)
-	openCodeFreeRoutes = doc.Free
-	for gateway, routes := range doc.Free {
-		for model, protocol := range routes {
-			openCodeRoutes[gateway][model] = protocol
-		}
-	}
 	for id := range openCodeRoutes["zen"] {
 		if openCodeRoutes["zen"][id] == "gemini" {
 			openCodeGeminiIDs[id] = true

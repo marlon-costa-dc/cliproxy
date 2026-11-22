@@ -2,11 +2,11 @@ package auth
 
 import (
 	"crypto/sha256"
-
 	"encoding/hex"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"strconv"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // ModelAvailability reports why selection skips a credential for a model.
@@ -44,7 +44,7 @@ func (a *Auth) RoutingQuotaDomain() string {
 // ModelQuotaDomain identifies the separate free pool for OpenCode routes.
 func (a *Auth) ModelQuotaDomain(model string) string {
 	domain := a.RoutingQuotaDomain()
-	if a != nil && domain != "" && registry.OpenCodeFreeModel(a.Provider, model) {
+	if a != nil && domain != "" && (a.Provider == "opencode" || a.Provider == "opencode-go") && registry.GetGlobalRegistry().LookupClientModelRoute(a.ID, model).FreeTextQuota {
 		return domain + ":free"
 	}
 	return domain

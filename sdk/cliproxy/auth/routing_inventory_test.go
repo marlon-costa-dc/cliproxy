@@ -1,33 +1,43 @@
 package auth
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"net/http"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
-func TestOpenCodeFreeModelQuotaDomain(t *testing.T) {
-	for _, tc := range []struct{ provider, gateway, model string }{
-		{"opencode", "zen", "big-pickle"}, {"opencode-go", "go", "beam-free"},
+func TestOpenCodeUsageLimitBlocksOnlyItsPoolUntilReset(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+	for _, tc := range []struct{ provider, code, reporter, peer, other string }{
+		{"opencode-go", ErrorCodeOpenCodeSubscriptionLimit, "sub-a", "sub-b", "free-a"},
+		{"opencode-go", ErrorCodeOpenCodeFreeLimit, "free-a", "free-b", "sub-a"},
+		{"opencode", ErrorCodeOpenCodeFreeLimit, "free-a", "free-b", "sub-a"},
 	} {
-		a := &Auth{Provider: tc.provider, QuotaDomain: "workspace"}
-		if a.ModelQuotaDomain(tc.model) == a.ModelQuotaDomain("deepseek-v4-pro") {
-			t.Errorf("%s shares the subscription domain", tc.model)
-		}
-		now := time.Now()
-		reset := now.Add(time.Hour)
-		a.ModelStates = map[string]*ModelState{"deepseek-v4-pro": {Unavailable: true, NextRetryAfter: reset, Quota: QuotaState{Exceeded: true, NextRecoverAt: reset}}}
-		if !AvailabilityForModel(a, "deepseek-v4-pro", now).Blocked || AvailabilityForModel(a, tc.model, now).Blocked {
-			t.Errorf("%s should remain available during the subscription model cooldown", tc.model)
-		}
-		found := false
-		for _, m := range registry.GetOpenCodeModels(tc.gateway) {
-			if m.ID == tc.model && len(m.Protocols) > 0 {
-				found = true
+		t.Run(tc.provider+"/"+tc.code, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			auth, err := m.Register(t.Context(), &Auth{ID: t.Name(), Provider: tc.provider, QuotaDomain: "workspace", Status: StatusActive})
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		if !found {
-			t.Errorf("%s missing from executable inventory", tc.model)
-		}
+			r := registry.GetGlobalRegistry()
+			r.RegisterClient(auth.ID, tc.provider, []*registry.ModelInfo{{ID: "sub-a"}, {ID: "sub-b"}, {ID: "free-a", FreeTextQuota: true}, {ID: "free-b", FreeTextQuota: true}})
+			t.Cleanup(func() { r.UnregisterClient(auth.ID) })
+			retry := time.Hour
+			if err := m.MarkResult(t.Context(), Result{AuthID: auth.ID, Provider: tc.provider, Model: tc.reporter, Error: &Error{Code: tc.code, HTTPStatus: http.StatusTooManyRequests}, RetryAfter: &retry}); err != nil {
+				t.Fatal(err)
+			}
+			auth, _ = m.GetByID(auth.ID)
+			now := time.Now()
+			original := AvailabilityForModel(auth, tc.reporter, now)
+			peer := AvailabilityForModel(auth, tc.peer, now)
+			if !original.QuotaCooldown || peer != original || !original.RecoverAt.After(now) {
+				t.Fatalf("unexpected pool cooldown: reporter=%+v peer=%+v", original, peer)
+			}
+			if AvailabilityForModel(auth, tc.other, now).Blocked || AvailabilityForModel(auth, tc.peer, peer.RecoverAt).Blocked {
+				t.Fatal("other pool or recovered peer remains blocked")
+			}
+		})
 	}
 }

@@ -68,7 +68,7 @@ func TestRegisterOpenCodeFreeModelsFromEachGateway(t *testing.T) {
 					http.NotFound(w, r)
 					return
 				}
-				_, _ = w.Write([]byte(`{"data":[{"id":"beam-free","canonical_id":"reflection/beam-1.0-501b-a23b","api":{"chat-completions":{}}},{"id":"hy4-flash-free","api":{"unsupported":{}}}]}`))
+				_, _ = w.Write([]byte(`{"data":[{"id":"beam-free","cost":{"text":{"input":{"price":0},"output":{"price":0}}},"canonical_id":"reflection/beam-1.0-501b-a23b","api":{"chat-completions":{}}},{"id":"hy4-flash-free","cost":{"text":{"input":{"price":0},"output":{"price":0.001}}},"api":{"chat-completions":{}}},{"id":"deepseek-v4-pro","api":{"unsupported":{}}}]}`))
 			}))
 			defer server.Close()
 			cfg := &config.Config{}
@@ -87,11 +87,14 @@ func TestRegisterOpenCodeFreeModelsFromEachGateway(t *testing.T) {
 			registry := internalregistry.GetGlobalRegistry()
 			defer registry.UnregisterClient(auths[0].ID)
 			entries := registry.GetModelsForClient(auths[0].ID)
-			if len(entries) != 1 {
-				t.Fatalf("got %d registered models, want only the compatible route", len(entries))
+			if len(entries) != 2 {
+				t.Fatalf("got %d registered models, want only the two compatible routes", len(entries))
 			}
-			model := entries[0]
-			if model.ID != "beam-free" || model.CatalogRouteProviderID != provider || model.CatalogProviderID != "reflection" || model.CatalogModelID != "beam-1.0-501b-a23b" {
+			if auths[0].ModelQuotaDomain("beam-free") != auths[0].RoutingQuotaDomain()+":free" || auths[0].ModelQuotaDomain("hy4-flash-free") != auths[0].RoutingQuotaDomain() {
+				t.Fatal("quota domain does not match the gateway prices")
+			}
+			model := registry.GetModelInfo("beam-free", provider)
+			if model == nil || model.CatalogRouteProviderID != provider || model.CatalogProviderID != "reflection" || model.CatalogModelID != "beam-1.0-501b-a23b" {
 				t.Errorf("unexpected published identity: %+v", model)
 			}
 		})

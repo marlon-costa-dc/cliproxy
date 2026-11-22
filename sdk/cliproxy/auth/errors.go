@@ -58,6 +58,12 @@ const ErrorCodeCredentialQuota = "credential_quota"
 
 const credentialQuotaErrorCode = ErrorCodeCredentialQuota
 
+// OpenCode reports separate reset windows for free and subscription usage.
+const (
+	ErrorCodeOpenCodeSubscriptionLimit = "opencode_subscription_limit"
+	ErrorCodeOpenCodeFreeLimit         = "opencode_free_limit"
+)
+
 // Error describes an authentication related failure in a provider agnostic format.
 type Error struct {
 	// Code is a short machine readable identifier.
