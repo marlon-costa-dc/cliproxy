@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -100,8 +101,8 @@ func TestOpenCodeNotSynthesizedWithoutKey(t *testing.T) {
 // opencs auth -> models registered into the global registry via the production
 // registration path -> the real OpenAIModels handler -> /v1/models. It runs
 // in-process (httptest) against the real handler + real registry + real
-// (env-provided) key; it makes no network call because GetOpenCodeModels
-// returns embedded static definitions.
+// (env-provided) key; it uses a synthetic registration to avoid external
+// catalog requests while exercising the production models endpoint.
 func TestOpenCodeModelsSurfaceInOpenAIModelsEndpoint(t *testing.T) {
 	key := realOpenCodeKey()
 	auths := synthesizeOpenCodeAuth(t, key)
@@ -110,15 +111,10 @@ func TestOpenCodeModelsSurfaceInOpenAIModelsEndpoint(t *testing.T) {
 	}
 	opencodeAuth := auths[0]
 
-	zen := registry.GetOpenCodeModels("zen")
-	goModels := registry.GetOpenCodeModels("go")
-	if len(zen) == 0 && len(goModels) == 0 {
-		t.Fatal("GetOpenCodeModels returned no models")
-	}
-	models := make([]*registry.ModelInfo, 0, len(zen)+len(goModels))
-	models = append(models, zen...)
-	models = append(models, goModels...)
-
+	models := []*registry.ModelInfo{{
+		ID:        "runtime-catalog-fixture-model",
+		Protocols: []string{modelrouting.ProtocolOpenAIChat},
+	}}
 	registry.GetGlobalRegistry().RegisterClient(opencodeAuth.ID, "opencode", models)
 	defer registry.GetGlobalRegistry().UnregisterClient(opencodeAuth.ID)
 
