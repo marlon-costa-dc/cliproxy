@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"strconv"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // ModelAvailability reports why selection skips a credential for a model.
@@ -37,6 +39,15 @@ func (a *Auth) RoutingQuotaDomain() string {
 		return a.QuotaDomain
 	}
 	return a.Provider
+}
+
+// ModelQuotaDomain identifies the separate free pool for OpenCode routes.
+func (a *Auth) ModelQuotaDomain(model string) string {
+	domain := a.RoutingQuotaDomain()
+	if a != nil && domain != "" && (a.Provider == "opencode" || a.Provider == "opencode-go") && registry.GetGlobalRegistry().LookupClientModelRoute(a.ID, model).FreeTextQuota {
+		return domain + ":free"
+	}
+	return domain
 }
 
 // RoutingCredentialRevision identifies a registration and version without secrets.

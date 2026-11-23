@@ -42,6 +42,8 @@ type ModelInfo struct {
 	// SupportsFast reports an advertised priority tier on retained provider models.
 	SupportsFast bool                  `json:"-"`
 	Pricing      *modelrouting.Pricing `json:"pricing,omitempty"`
+	// FreeTextQuota identifies a separate free text pool in the live gateway catalog.
+	FreeTextQuota bool `json:"-"`
 	// Routing facts are internal and declared by the model registration owner.
 	CatalogProviderID      string   `json:"-"`
 	CatalogModelID         string   `json:"-"`
@@ -1501,6 +1503,7 @@ func (r *ModelRegistry) ClientModelRoute(clientID string, modelIDs ...string) (m
 
 // ClientModelRouteInfo describes the source and alias of a registered route.
 type ClientModelRouteInfo struct {
+	FreeTextQuota    bool
 	MetadataModelID  string
 	OAuthAlias       string
 	OAuthAliasSource string
@@ -1518,11 +1521,11 @@ func (r *ModelRegistry) LookupClientModelRoute(clientID string, modelIDs ...stri
 			continue
 		}
 		if info := models[modelID]; info != nil {
-			return ClientModelRouteInfo{info.MetadataModelID, info.OAuthAlias, info.OAuthAliasSource}
+			return ClientModelRouteInfo{MetadataModelID: info.MetadataModelID, OAuthAlias: info.OAuthAlias, OAuthAliasSource: info.OAuthAliasSource, FreeTextQuota: info.FreeTextQuota}
 		}
 		for _, id := range r.clientModels[clientID] {
 			if info := models[id]; info != nil && strings.EqualFold(id, modelID) {
-				return ClientModelRouteInfo{info.MetadataModelID, info.OAuthAlias, info.OAuthAliasSource}
+				return ClientModelRouteInfo{MetadataModelID: info.MetadataModelID, OAuthAlias: info.OAuthAlias, OAuthAliasSource: info.OAuthAliasSource, FreeTextQuota: info.FreeTextQuota}
 			}
 		}
 	}

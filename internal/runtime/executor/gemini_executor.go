@@ -42,6 +42,7 @@ const (
 // GeminiExecutor is a stateless executor for the official Gemini API using API keys.
 // It supports regular and streaming requests to the Google Generative Language API.
 type GeminiExecutor struct {
+	gatewayQuota gatewayQuotaClassifier
 	// cfg holds the application configuration.
 	cfg        *config.Config
 	identifier string
@@ -251,6 +252,9 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, b); errClear != nil {
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
+		if limit := e.gatewayQuota.limit(httpResp, b); limit != nil {
+			return resp, limit
+		}
 		err = newGeminiStatusErr(httpResp.StatusCode, httpResp.Header, b)
 		return resp, err
 	}
@@ -414,6 +418,9 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, b); errClear != nil {
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
+		}
+		if limit := e.gatewayQuota.limit(httpResp, b); limit != nil {
+			return nil, limit
 		}
 		err = newGeminiStatusErr(httpResp.StatusCode, httpResp.Header, b)
 		return nil, err

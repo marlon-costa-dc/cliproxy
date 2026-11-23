@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -42,6 +44,28 @@ func NewOpenCodeExecutor(id string) *OpenCodeExecutor {
 		gateway = "go"
 	}
 	return &OpenCodeExecutor{id: id, gateway: gateway}
+}
+
+// Match exact JSON zero, including scientific notation, without rounding a tiny price to zero.
+var zeroCatalogPrice = regexp.MustCompile(`^-?0(\.0+)?([eE][+-]?[0-9]+)?$`)
+
+type openCodeTextRate struct {
+	Price     json.Number                `json:"price"`
+	Cache     map[string]json.RawMessage `json:"cache"`
+	Overrides []json.RawMessage          `json:"overrides"`
+}
+
+func (rate openCodeTextRate) free() bool {
+	// Conditional and tiered rates require separate qualification.
+	if !zeroCatalogPrice.MatchString(rate.Price.String()) || len(rate.Overrides) > 0 {
+		return false
+	}
+	for _, price := range rate.Cache {
+		if !zeroCatalogPrice.Match(price) {
+			return false
+		}
+	}
+	return true
 }
 
 // FetchOpenCodeModels joins the gateway's explicit model identity to routes
@@ -75,9 +99,15 @@ func FetchOpenCodeModels(ctx context.Context, auth *clipoauth.Auth, cfg *config.
 	}
 	var catalog struct {
 		Data []struct {
-			ID          string                     `json:"id"`
-			CanonicalID string                     `json:"canonical_id"`
-			API         map[string]json.RawMessage `json:"api"`
+			ID          string `json:"id"`
+			CanonicalID string `json:"canonical_id"`
+			Cost        struct {
+				Text struct {
+					Input  openCodeTextRate `json:"input"`
+					Output openCodeTextRate `json:"output"`
+				} `json:"text"`
+			} `json:"cost"`
+			API map[string]json.RawMessage `json:"api"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &catalog); err != nil {
@@ -86,27 +116,31 @@ func FetchOpenCodeModels(ctx context.Context, auth *clipoauth.Auth, cfg *config.
 	if len(catalog.Data) == 0 {
 		return nil, fmt.Errorf("OpenCode catalog contains no models")
 	}
-	byID := make(map[string]int, len(catalog.Data))
-	for i, row := range catalog.Data {
-		if _, exists := byID[row.ID]; exists || row.ID == "" {
+	seenIDs := make(map[string]struct{}, len(catalog.Data))
+	for _, row := range catalog.Data {
+		if _, exists := seenIDs[row.ID]; exists || row.ID == "" {
 			return nil, fmt.Errorf("OpenCode catalog has missing or duplicate model identity")
 		}
-		byID[row.ID] = i
+		seenIDs[row.ID] = struct{}{}
 	}
-	apiNames := map[string]string{"chat": "chat-completions", "messages": "messages", "responses": "responses", "gemini": "generate-content"}
-	models := registry.GetOpenCodeModels(e.gateway)
-	available := models[:0]
-	for _, model := range models {
-		index, ok := byID[model.ID]
-		if !ok {
+	available := make([]*registry.ModelInfo, 0, len(catalog.Data))
+	for _, row := range catalog.Data {
+		protocol := openCodeDeclaredProtocol(row.API)
+		if protocol == "" {
 			continue
 		}
-		row := catalog.Data[index]
-		apiName := apiNames[registry.ResolveOpenCodeProtocol(e.gateway, model.ID)]
-		if _, supported := row.API[apiName]; !supported {
-			continue
+		model := &registry.ModelInfo{
+			ID:          row.ID,
+			Object:      "model",
+			OwnedBy:     "opencode",
+			Type:        "opencode",
+			DisplayName: row.ID,
+			Description: "OpenCode " + e.gateway + " gateway — " + row.ID,
+			Protocols:   []string{protocol},
+			FreeTextQuota: row.Cost.Text.Input.free() &&
+				row.Cost.Text.Output.free(),
 		}
-		if row.CanonicalID != "" && len(model.Protocols) > 0 {
+		if row.CanonicalID != "" {
 			owner, canonical, ok := strings.Cut(row.CanonicalID, "/")
 			if !ok || owner == "" || canonical == "" || strings.TrimSpace(row.CanonicalID) != row.CanonicalID {
 				return nil, fmt.Errorf("OpenCode catalog has invalid canonical identity for %q", model.ID)
@@ -121,20 +155,39 @@ func FetchOpenCodeModels(ctx context.Context, auth *clipoauth.Auth, cfg *config.
 	return available, nil
 }
 
+// openCodeDeclaredProtocol derives the executable wire protocol solely from
+// the model's declared gateway API capabilities. Unsupported APIs are not
+// advertised as direct text routes.
+func openCodeDeclaredProtocol(apis map[string]json.RawMessage) string {
+	for _, declared := range []struct{ api, protocol string }{
+		{"chat-completions", modelrouting.ProtocolOpenAIChat},
+		{"responses", modelrouting.ProtocolOpenAIResponses},
+		{"messages", modelrouting.ProtocolAnthropicMessages},
+	} {
+		if _, ok := apis[declared.api]; ok {
+			return declared.protocol
+		}
+	}
+	return ""
+}
+
 func (e *OpenCodeExecutor) Identifier() string  { return e.id }
 func (e *OpenCodeExecutor) ProviderKey() string { return e.id }
 
 func (e *OpenCodeExecutor) RequestToFormat(req cliproxyexecutor.Request, _ cliproxyexecutor.Options) sdktranslator.Format {
-	protocol := registry.ResolveOpenCodeProtocol(e.gateway, thinking.ParseSuffix(req.Model).ModelName)
-	switch protocol {
-	case "messages", "gemini":
-		return sdktranslator.FormatClaude
-	case "responses":
-		return sdktranslator.FormatOpenAIResponse
-	case "chat":
+	model := registry.GetGlobalRegistry().GetModelInfo(thinking.ParseSuffix(req.Model).ModelName, e.id)
+	if model == nil {
 		return sdktranslator.FormatOpenAI
 	}
-	return sdktranslator.FormatOpenAI
+	_, format := openCodeRoute(firstOpenCodeProtocol(model.Protocols))
+	return format
+}
+
+func firstOpenCodeProtocol(protocols []string) string {
+	if len(protocols) == 0 {
+		return ""
+	}
+	return protocols[0]
 }
 
 func (e *OpenCodeExecutor) cloneAuthWithBaseURL(auth *clipoauth.Auth) *clipoauth.Auth {
@@ -200,12 +253,28 @@ func openCodeSetBearer(req *http.Request, apiKey string) {
 }
 
 func (e *OpenCodeExecutor) resolveRoute(modelID string) (protocol string, url string, err error) {
-	protocol = registry.ResolveOpenCodeProtocol(e.gateway, modelID)
-	if protocol == "" {
+	model := registry.GetGlobalRegistry().GetModelInfo(modelID, e.id)
+	if model == nil || len(model.Protocols) != 1 {
 		return "", "", fmt.Errorf("opencode: model %q is not available on the %s gateway", modelID, e.gateway)
 	}
-	url = registry.OpenCodeModelPath(e.gateway, modelID)
+	protocol = firstOpenCodeProtocol(model.Protocols)
+	url, _ = openCodeRoute(protocol)
+	if url == "" {
+		return "", "", fmt.Errorf("opencode: model %q declares unsupported protocol %q", modelID, protocol)
+	}
 	return protocol, url, nil
+}
+
+func openCodeRoute(protocol string) (string, sdktranslator.Format) {
+	switch protocol {
+	case modelrouting.ProtocolOpenAIResponses:
+		return "/v1/responses", sdktranslator.FormatOpenAIResponse
+	case modelrouting.ProtocolAnthropicMessages:
+		return "/v1/messages", sdktranslator.FormatClaude
+	case modelrouting.ProtocolOpenAIChat:
+		return "/v1/chat/completions", sdktranslator.FormatOpenAI
+	}
+	return "", sdktranslator.FormatOpenAI
 }
 
 func (e *OpenCodeExecutor) Execute(ctx context.Context, auth *clipoauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -220,20 +289,18 @@ func (e *OpenCodeExecutor) Execute(ctx context.Context, auth *clipoauth.Auth, re
 	log.Debugf("opencode executor [%s]: model=%q protocol=%q path=%s", e.gateway, baseModel, protocol, path)
 
 	switch protocol {
-	case "messages":
+	case modelrouting.ProtocolAnthropicMessages:
 		// The legacy native Messages endpoint accepts the Anthropic API key header.
 		clonedAuth.Attributes["anthropic_auth_scheme"] = "x-api-key"
 		ce := NewClaudeExecutor(e.cfg)
+		ce.gatewayQuota = openCodeGatewayQuota
 		return ce.Execute(ctx, clonedAuth, req, opts)
-	case "responses":
+	case modelrouting.ProtocolOpenAIResponses:
 		fullURL := baseURL + path
 		return e.executeOpenAIEndpoint(ctx, clonedAuth, req, opts, fullURL, sdktranslator.FormatOpenAIResponse)
-	case "chat":
+	case modelrouting.ProtocolOpenAIChat:
 		fullURL := baseURL + path
 		return e.executeOpenAIEndpoint(ctx, clonedAuth, req, opts, fullURL, sdktranslator.FormatOpenAI)
-	case "gemini":
-		ge := NewGeminiExecutor(e.cfg)
-		return ge.Execute(ctx, clonedAuth, req, opts)
 	}
 	return cliproxyexecutor.Response{}, fmt.Errorf("opencode: unsupported protocol %q for model %q", protocol, baseModel)
 }
@@ -250,20 +317,18 @@ func (e *OpenCodeExecutor) ExecuteStream(ctx context.Context, auth *clipoauth.Au
 	log.Debugf("opencode executor [%s]: stream model=%q protocol=%q path=%s", e.gateway, baseModel, protocol, path)
 
 	switch protocol {
-	case "messages":
+	case modelrouting.ProtocolAnthropicMessages:
 		// The legacy native Messages endpoint accepts the Anthropic API key header.
 		clonedAuth.Attributes["anthropic_auth_scheme"] = "x-api-key"
 		ce := NewClaudeExecutor(e.cfg)
+		ce.gatewayQuota = openCodeGatewayQuota
 		return ce.ExecuteStream(ctx, clonedAuth, req, opts)
-	case "responses":
+	case modelrouting.ProtocolOpenAIResponses:
 		fullURL := baseURL + path
 		return e.executeOpenAIEndpointStream(ctx, clonedAuth, req, opts, fullURL, sdktranslator.FormatOpenAIResponse)
-	case "chat":
+	case modelrouting.ProtocolOpenAIChat:
 		fullURL := baseURL + path
 		return e.executeOpenAIEndpointStream(ctx, clonedAuth, req, opts, fullURL, sdktranslator.FormatOpenAI)
-	case "gemini":
-		ge := NewGeminiExecutor(e.cfg)
-		return ge.ExecuteStream(ctx, clonedAuth, req, opts)
 	}
 	return nil, fmt.Errorf("opencode: unsupported protocol %q for model %q", protocol, baseModel)
 }
@@ -339,7 +404,7 @@ func (e *OpenCodeExecutor) executeOpenAIEndpoint(ctx context.Context, auth *clip
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("opencode executor: error status: %d, message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newOpenCodeStatusError(httpResp.StatusCode, httpResp.Header, data)
+		err = newOpenCodeStatusError(httpResp, data)
 		return resp, err
 	}
 
@@ -412,7 +477,7 @@ func (e *OpenCodeExecutor) executeOpenAIEndpointStream(ctx context.Context, auth
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("opencode executor: close response body error: %v", errClose)
 		}
-		return nil, newOpenCodeStatusError(httpResp.StatusCode, httpResp.Header, b)
+		return nil, newOpenCodeStatusError(httpResp, b)
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk, 64)
@@ -539,19 +604,41 @@ func authAccountInfo(auth *clipoauth.Auth) (string, string, string, string) {
 	return auth.ID, auth.Label, authType, authValue
 }
 
-// openCodeAccountLimitError is the usage limit OpenCode applies to the whole
-// account (the Go weekly or monthly limit); FreeUsageLimitError covers only
-// the free models and stays scoped to the model that answered it.
-const openCodeAccountLimitError = "GoUsageLimitError"
+// An OpenCode usage limit belongs to its billing pool on the credential.
+type openCodeUsageLimit struct {
+	statusErr
+	pool string
+}
 
-// newOpenCodeStatusError keeps the provider's Retry-After, so the cooldown
-// lasts until the account's stated reset (about 4 h for a free-tier limit,
-// days for a Go one), and an account-wide limit cools the credential down for
-// every model it serves instead of only the model that answered.
-func newOpenCodeStatusError(status int, headers http.Header, body []byte) statusErr {
-	err := newOpenAICompatStatusError(status, headers, body)
-	if status == http.StatusTooManyRequests && ojson.GetBytesNoCopy(body, "error.type").String() == openCodeAccountLimitError {
-		err.credentialScoped = true
+func (e openCodeUsageLimit) ErrorCode() string { return e.pool }
+
+// A delegate keeps its native error semantics unless its gateway recognizes
+// the response as a provider quota limit.
+type gatewayQuotaClassifier func(*http.Response, []byte) error
+
+func (classify gatewayQuotaClassifier) limit(resp *http.Response, body []byte) error {
+	if classify == nil || resp.StatusCode != http.StatusTooManyRequests {
+		return nil
 	}
-	return err
+	return classify(resp, body)
+}
+
+func openCodeGatewayQuota(resp *http.Response, body []byte) error {
+	var pool string
+	switch ojson.GetBytesNoCopy(body, "error.type").String() {
+	case "GoUsageLimitError":
+		pool = clipoauth.ErrorCodeOpenCodeSubscriptionLimit
+	case "FreeUsageLimitError":
+		pool = clipoauth.ErrorCodeOpenCodeFreeLimit
+	default:
+		return nil
+	}
+	return openCodeUsageLimit{newOpenAICompatStatusError(resp.StatusCode, resp.Header, body), pool}
+}
+
+func newOpenCodeStatusError(resp *http.Response, body []byte) error {
+	if limit := gatewayQuotaClassifier(openCodeGatewayQuota).limit(resp, body); limit != nil {
+		return limit
+	}
+	return newOpenAICompatStatusError(resp.StatusCode, resp.Header, body)
 }

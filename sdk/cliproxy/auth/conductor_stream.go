@@ -429,10 +429,6 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamStart := time.Now()
 	go func() {
-		defer close(out)
-		if cancelAttempt != nil {
-			defer cancelAttempt()
-		}
 		var failed bool
 		var sawCompleted bool
 		var sawIncomplete bool
@@ -443,13 +439,14 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if chunk.Err != nil && !failed {
+				rerr := resultErrorFromError(chunk.Err)
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					if retryAfterFromError(chunk.Err) != nil {
 						m.recordCanceledUpstreamCooldown(ctx, auth, provider, resultModel, routeModel, opts, chunk.Err, ephemeralResult, executionSeq)
 						failed = true
 						return false
 					}
-					if !isRequestScopedError(chunk.Err) {
+					if !isRequestScopedError(chunk.Err) && rerr.Code != ErrorCodeTransientTransport {
 						failed = true
 						return false
 					}
@@ -457,7 +454,6 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				failed = true
 				entry := logEntryWithRequestID(ctx)
 				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
-				rerr := resultErrorFromError(chunk.Err)
 				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.requestScopedErrorConfig(ctx))
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 				result.RetryAfter = retryAfterFromError(chunk.Err)
@@ -529,15 +525,27 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				return true
 			}
 		}
+		// Disconnect downstream immediately. The attempt can still deliver the
+		// terminal failure that caused the client to cancel after an SSE error.
+		defer func() {
+			close(out)
+			if cancelAttempt != nil {
+				cancelAttempt()
+			}
+			forward = false
+			if remaining != nil {
+				for chunk := range remaining {
+					if chunk.Err != nil {
+						emit(chunk)
+					}
+				}
+			}
+		}()
 		for _, chunk := range buffered {
 			if !forward {
 				break
 			}
 			if ok := emit(chunk); !ok {
-				if cancelAttempt != nil {
-					cancelAttempt()
-				}
-				discardStreamChunks(remaining)
 				return
 			}
 		}
@@ -554,10 +562,6 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				default:
 					select {
 					case <-ctx.Done():
-						if cancelAttempt != nil {
-							cancelAttempt()
-						}
-						discardStreamChunks(remaining)
 						return
 					case chunk, open = <-remaining:
 					}
@@ -572,10 +576,6 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				continue
 			}
 			if ok := emit(chunk); !ok {
-				if cancelAttempt != nil {
-					cancelAttempt()
-				}
-				discardStreamChunks(remaining)
 				return
 			}
 		}

@@ -31,6 +31,7 @@ import (
 // in-memory thread alias state for OAuth continuations.
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type ClaudeExecutor struct {
+	gatewayQuota            gatewayQuotaClassifier
 	cfg                     *config.Config
 	requestLogProvider      string
 	upstreamModelNormalizer func(string) string

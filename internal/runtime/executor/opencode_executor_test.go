@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelrouting"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	clipoauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -25,17 +28,21 @@ func TestOpenCodeExecutor_RoutesByProtocol(t *testing.T) {
 		wantFormat sdktranslator.Format
 		wantErr    bool
 	}{
-		{"zen-responses", "opencode", "gpt-5.6-luna", "/v1/responses", sdktranslator.FormatOpenAIResponse, false},
-		{"zen-messages", "opencode", "claude-opus-5", "/v1/messages", sdktranslator.FormatClaude, false},
-		{"zen-chat", "opencode", "deepseek-v4-pro", "/v1/chat/completions", sdktranslator.FormatOpenAI, false},
-		{"go-responses", "opencode-go", "gpt-5.6-luna", "/v1/responses", sdktranslator.FormatOpenAIResponse, false},
-		{"go-messages", "opencode-go", "claude-opus-5", "/v1/messages", sdktranslator.FormatClaude, false},
-		{"go-chat", "opencode-go", "deepseek-v4-pro", "/v1/chat/completions", sdktranslator.FormatOpenAI, false},
+		{"zen-responses", "opencode", "fixture-responses", "/v1/responses", sdktranslator.FormatOpenAIResponse, false},
+		{"zen-messages", "opencode", "fixture-messages", "/v1/messages", sdktranslator.FormatClaude, false},
+		{"zen-chat", "opencode", "fixture-chat", "/v1/chat/completions", sdktranslator.FormatOpenAI, false},
+		{"go-responses", "opencode-go", "fixture-responses", "/v1/responses", sdktranslator.FormatOpenAIResponse, false},
+		{"go-messages", "opencode-go", "fixture-messages", "/v1/messages", sdktranslator.FormatClaude, false},
+		{"go-chat", "opencode-go", "fixture-chat", "/v1/chat/completions", sdktranslator.FormatOpenAI, false},
 		{"unknown-model", "opencode", "no-such-model", "", sdktranslator.FormatOpenAI, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if !tc.wantErr {
+				protocol := map[string]string{"fixture-responses": modelrouting.ProtocolOpenAIResponses, "fixture-messages": modelrouting.ProtocolAnthropicMessages, "fixture-chat": modelrouting.ProtocolOpenAIChat}[tc.modelID]
+				registerOpenCodeTestRoute(t, tc.gateway, tc.modelID, protocol)
+			}
 			exec := NewOpenCodeExecutor(tc.gateway)
 			if exec.Identifier() != tc.gateway {
 				t.Fatalf("Identifier() = %q, want %q", exec.Identifier(), tc.gateway)
@@ -65,7 +72,17 @@ func TestOpenCodeExecutor_RoutesByProtocol(t *testing.T) {
 	}
 }
 
+func registerOpenCodeTestRoute(t *testing.T, provider, modelID, protocol string) {
+	t.Helper()
+	clientID := "test-opencode-" + uuid.NewString()
+	registry.GetGlobalRegistry().RegisterClient(clientID, provider, []*registry.ModelInfo{{
+		ID: modelID, Protocols: []string{protocol},
+	}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(clientID) })
+}
+
 func TestOpenCodeExecutor_ExecuteDispatchesResponses(t *testing.T) {
+	registerOpenCodeTestRoute(t, constant.OpenCode, "fixture-responses", modelrouting.ProtocolOpenAIResponses)
 	var capturedPath, bearer, anthropicKey string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
@@ -85,8 +102,8 @@ func TestOpenCodeExecutor_ExecuteDispatchesResponses(t *testing.T) {
 		Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
 	}
 	req := cliproxyexecutor.Request{
-		Model:   "gpt-5.6-luna",
-		Payload: []byte(`{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"hi"}]}`),
+		Model:   "fixture-responses",
+		Payload: []byte(`{"model":"fixture-responses","messages":[{"role":"user","content":"hi"}]}`),
 	}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
 
@@ -106,13 +123,14 @@ func TestOpenCodeExecutor_ExecuteDispatchesResponses(t *testing.T) {
 }
 
 func TestOpenCodeExecutor_ExecuteDispatchesMessages(t *testing.T) {
+	registerOpenCodeTestRoute(t, constant.OpenCode, "fixture-messages", modelrouting.ProtocolAnthropicMessages)
 	var capturedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("event: message_start\n"))
-		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":"end_turn","usage":{"output_tokens":5,"input_tokens":5}}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"fixture-messages","content":[],"stop_reason":"end_turn","usage":{"output_tokens":5,"input_tokens":5}}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: content_block_start\n"))
 		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: content_block_delta\n"))
@@ -135,8 +153,8 @@ func TestOpenCodeExecutor_ExecuteDispatchesMessages(t *testing.T) {
 		Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
 	}
 	req := cliproxyexecutor.Request{
-		Model:   "claude-opus-5",
-		Payload: []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}]}`),
+		Model:   "fixture-messages",
+		Payload: []byte(`{"model":"fixture-messages","messages":[{"role":"user","content":"hi"}]}`),
 	}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
 
@@ -214,7 +232,7 @@ func openCodeSessionServer(t *testing.T) (*httptest.Server, *[]string) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(200)
 			for _, frame := range []string{
-				"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":"end_turn","usage":{"output_tokens":5,"input_tokens":5}}}`,
+				"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"fixture-messages","content":[],"stop_reason":"end_turn","usage":{"output_tokens":5,"input_tokens":5}}}`,
 				"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
 				"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
 				"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}`,
@@ -235,6 +253,8 @@ func openCodeSessionServer(t *testing.T) (*httptest.Server, *[]string) {
 }
 
 func TestOpenCodeExecutor_SendsConversationSession(t *testing.T) {
+	registerOpenCodeTestRoute(t, constant.OpenCodeGo, "fixture-chat", modelrouting.ProtocolOpenAIChat)
+	registerOpenCodeTestRoute(t, constant.OpenCodeGo, "fixture-messages", modelrouting.ProtocolAnthropicMessages)
 	derived := map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:probe"}
 	send := func(t *testing.T, model string, metadata map[string]any, headers http.Header) string {
 		t.Helper()
@@ -263,16 +283,16 @@ func TestOpenCodeExecutor_SendsConversationSession(t *testing.T) {
 		return (*seen)[0]
 	}
 
-	chat := send(t, "deepseek-v4-pro", derived, nil)
-	if messages := send(t, "claude-opus-5", derived, nil); messages != chat {
+	chat := send(t, "fixture-chat", derived, nil)
+	if messages := send(t, "fixture-messages", derived, nil); messages != chat {
 		t.Fatalf("one conversation sent two sessions: chat %q, messages %q", chat, messages)
 	}
-	if other := send(t, "deepseek-v4-pro", map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:other"}, nil); other == chat {
+	if other := send(t, "fixture-chat", map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:other"}, nil); other == chat {
 		t.Fatalf("two conversations shared session %q", chat)
 	}
 	// A request with no declared or derived identity still carries a session:
 	// the gateway rejects one without it.
-	send(t, "deepseek-v4-pro", nil, nil)
+	send(t, "fixture-chat", nil, nil)
 
 	// A session the client declared selects the upstream session, whatever
 	// header it used and whatever characters it holds, and never leaves verbatim.
@@ -281,11 +301,11 @@ func TestOpenCodeExecutor_SendsConversationSession(t *testing.T) {
 		{"X-Session-Id": {"agent-session-2"}},
 		{"X-Opencode-Session": {"$X-Session-Id"}},
 	} {
-		declared := send(t, "deepseek-v4-pro", derived, headers)
+		declared := send(t, "fixture-chat", derived, headers)
 		if declared == chat {
 			t.Fatalf("declared session %v did not select the upstream session", headers)
 		}
-		if again := send(t, "deepseek-v4-pro", nil, headers); again != declared {
+		if again := send(t, "fixture-chat", nil, headers); again != declared {
 			t.Fatalf("declared session %v is not stable: %q then %q", headers, declared, again)
 		}
 	}
@@ -294,6 +314,7 @@ func TestOpenCodeExecutor_SendsConversationSession(t *testing.T) {
 // An OpenCode credential may keep its key in metadata; the delegated messages
 // executor must still authenticate with it instead of calling anonymously.
 func TestOpenCodeExecutor_DelegatedMessagesSendMetadataKey(t *testing.T) {
+	registerOpenCodeTestRoute(t, constant.OpenCode, "fixture-messages", modelrouting.ProtocolAnthropicMessages)
 	var gotAuth, gotXAPIKey string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -301,7 +322,7 @@ func TestOpenCodeExecutor_DelegatedMessagesSendMetadataKey(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		for _, frame := range []string{
-			"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":"end_turn","usage":{"output_tokens":1,"input_tokens":1}}}`,
+			"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"fixture-messages","content":[],"stop_reason":"end_turn","usage":{"output_tokens":1,"input_tokens":1}}}`,
 			"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 			"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}`,
 			"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}`,
@@ -320,8 +341,8 @@ func TestOpenCodeExecutor_DelegatedMessagesSendMetadataKey(t *testing.T) {
 		Attributes: map[string]string{"base_url": server.URL},
 		Metadata:   map[string]any{"api_key": "metadata-key"},
 	}
-	payload := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"Respond with OK."}]}`)
-	req := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: payload}
+	payload := []byte(`{"model":"fixture-messages","messages":[{"role":"user","content":"Respond with OK."}]}`)
+	req := cliproxyexecutor.Request{Model: "fixture-messages", Payload: payload}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload}
 	if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
 		t.Fatalf("Execute error: %v", err)
@@ -335,6 +356,7 @@ func TestOpenCodeExecutor_DelegatedMessagesSendMetadataKey(t *testing.T) {
 }
 
 func TestOpenCodeExecutor_PreservesNativeResponsesSSEFrames(t *testing.T) {
+	registerOpenCodeTestRoute(t, constant.OpenCodeGo, "fixture-responses", modelrouting.ProtocolOpenAIResponses)
 	const events = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"PONG\"}\n\n" +
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +374,7 @@ func TestOpenCodeExecutor_PreservesNativeResponsesSSEFrames(t *testing.T) {
 		Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
 	}
 	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
-		Model: "gpt-5.6-luna", Payload: []byte(`{"model":"gpt-5.6-luna","input":"Reply with PONG.","stream":true}`),
+		Model: "fixture-responses", Payload: []byte(`{"model":"fixture-responses","input":"Reply with PONG.","stream":true}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse})
 	if err != nil {
 		t.Fatal(err)
@@ -375,8 +397,8 @@ func TestOpenCodeCatalogUsesDeclaredCanonicalIDAndAPICapability(t *testing.T) {
 			t.Errorf("unexpected public catalog request: %s %s", r.Method, r.URL.Path)
 		}
 		_, _ = w.Write([]byte(`{"data":[
-			{"id":"gpt-5.6-luna","canonical_id":"owner/exact-release","type":"chat","api":{"responses":{}}},
-			{"id":"glm-5.2","canonical_id":"owner/mismatched","api":{"responses":{}}}
+		{"id":"model-from-live-catalog-7f3a","canonical_id":"owner/exact-release","type":"chat","api":{"responses":{}},"cost":{"text":{"input":{"price":0},"output":{"price":0}}}},
+		{"id":"unroutable-live-model","canonical_id":"owner/mismatched","api":{"unsupported":{}}}
 		]}`))
 	}))
 	defer server.Close()
@@ -386,27 +408,117 @@ func TestOpenCodeCatalogUsesDeclaredCanonicalIDAndAPICapability(t *testing.T) {
 		t.Fatalf("expected one executable model, got %v, %v", models, err)
 	}
 	model := models[0]
-	if model.ID != "gpt-5.6-luna" || model.CatalogProviderID != "owner" ||
+	if model.ID != "model-from-live-catalog-7f3a" || model.CatalogProviderID != "owner" ||
 		model.CatalogModelID != "exact-release" || model.CatalogRouteProviderID != "opencode-go" ||
 		model.CatalogRouteModelID != model.ID {
 		t.Fatalf("model identity does not preserve the producer's declaration: %+v", model)
 	}
+	if !model.FreeTextQuota || len(model.Protocols) != 1 || model.Protocols[0] != modelrouting.ProtocolOpenAIResponses {
+		t.Fatalf("live API and free price were not propagated: %+v", model)
+	}
+	clientID := "test-opencode-live-catalog-" + uuid.NewString()
+	registry.GetGlobalRegistry().RegisterClient(clientID, constant.OpenCodeGo, models)
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(clientID) })
+	exec := NewOpenCodeExecutor(constant.OpenCodeGo)
+	protocol, path, err := exec.resolveRoute(model.ID)
+	if err != nil || protocol != modelrouting.ProtocolOpenAIResponses || path != "/v1/responses" {
+		t.Fatalf("new catalog model route = (%q, %q, %v)", protocol, path, err)
+	}
 }
 
-// An OpenCode usage limit states the account's reset as Retry-After; the
-// executor error carries it so the cooldown lasts until that reset instead of
-// the generic backoff, on both the unary and the stream path. The Go limit
-// covers the whole account, so it cools down the credential; the free-tier
-// limit covers only the free models and stays scoped to the model.
+func TestOpenCodeCatalogIncludesNewIDsFromDeclaredAPIs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"never-seen-chat-id","api":{"chat-completions":{}}},
+			{"id":"never-seen-messages-id","api":{"messages":{}}},
+			{"id":"never-seen-responses-id","api":{"responses":{}}},
+			{"id":"unsupported-id","api":{"generate-content":{}}}
+		]}`))
+	}))
+	defer server.Close()
+	auth := &clipoauth.Auth{Attributes: map[string]string{"base_url": server.URL}}
+	models, err := FetchOpenCodeModels(context.Background(), auth, &config.Config{}, constant.OpenCodeGo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("models = %d, want 3 declared executable APIs", len(models))
+	}
+	want := map[string]string{
+		"never-seen-chat-id":      modelrouting.ProtocolOpenAIChat,
+		"never-seen-messages-id":  modelrouting.ProtocolAnthropicMessages,
+		"never-seen-responses-id": modelrouting.ProtocolOpenAIResponses,
+	}
+	for _, model := range models {
+		if len(model.Protocols) != 1 || model.Protocols[0] != want[model.ID] {
+			t.Errorf("model %q protocols = %v, want [%s]", model.ID, model.Protocols, want[model.ID])
+		}
+	}
+}
+
+func TestOpenCodeGatewaysResolveSameIDFromTheirOwnCatalogDeclaration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var api string
+		switch r.URL.Path {
+		case "/zen/v1/models":
+			api = `"responses":{}`
+		case "/go/v1/models":
+			api = `"chat-completions":{}`
+		default:
+			t.Errorf("unexpected catalog path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"data":[{"id":"newly-announced-model","api":{%s}}]}`, api)
+	}))
+	defer server.Close()
+	for _, tc := range []struct {
+		provider string
+		gateway  string
+		apiPath  string
+		protocol string
+	}{
+		{constant.OpenCode, "/zen", "/v1/responses", modelrouting.ProtocolOpenAIResponses},
+		{constant.OpenCodeGo, "/go", "/v1/chat/completions", modelrouting.ProtocolOpenAIChat},
+	} {
+		auth := &clipoauth.Auth{Attributes: map[string]string{"base_url": server.URL + tc.gateway}}
+		models, err := FetchOpenCodeModels(context.Background(), auth, &config.Config{}, tc.provider)
+		if err != nil || len(models) != 1 {
+			t.Fatalf("FetchOpenCodeModels(%s) = %d models, %v", tc.provider, len(models), err)
+		}
+		clientID := "test-opencode-gateway-" + uuid.NewString()
+		registry.GetGlobalRegistry().RegisterClient(clientID, tc.provider, models)
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(clientID) })
+		protocol, path, err := NewOpenCodeExecutor(tc.provider).resolveRoute("newly-announced-model")
+		if err != nil || protocol != tc.protocol || path != tc.apiPath {
+			t.Fatalf("%s live declaration resolved to (%q, %q, %v)", tc.provider, protocol, path, err)
+		}
+	}
+}
+
+// Unary and stream failures preserve the reset time and the billing pool.
 func TestOpenCodeExecutor_UsageLimitKeepsRetryAfterAndScope(t *testing.T) {
 	for _, tc := range []struct {
-		errorType        string
-		credentialScoped bool
+		provider  string
+		model     string
+		errorType string
+		poolCode  string
 	}{
-		{"GoUsageLimitError", true},
-		{"FreeUsageLimitError", false},
+		{constant.OpenCodeGo, "fixture-subscription-chat", "GoUsageLimitError", clipoauth.ErrorCodeOpenCodeSubscriptionLimit},
+		{constant.OpenCodeGo, "fixture-subscription-messages", "GoUsageLimitError", clipoauth.ErrorCodeOpenCodeSubscriptionLimit},
+		{constant.OpenCodeGo, "fixture-subscription-responses", "GoUsageLimitError", clipoauth.ErrorCodeOpenCodeSubscriptionLimit},
+		{constant.OpenCodeGo, "fixture-free-chat", "FreeUsageLimitError", clipoauth.ErrorCodeOpenCodeFreeLimit},
+		{constant.OpenCode, "fixture-free-messages", "FreeUsageLimitError", clipoauth.ErrorCodeOpenCodeFreeLimit},
 	} {
-		t.Run(tc.errorType, func(t *testing.T) {
+		t.Run(tc.model, func(t *testing.T) {
+			protocol := modelrouting.ProtocolOpenAIChat
+			if strings.Contains(tc.model, "messages") {
+				protocol = modelrouting.ProtocolAnthropicMessages
+			}
+			if strings.Contains(tc.model, "responses") {
+				protocol = modelrouting.ProtocolOpenAIResponses
+			}
+			registerOpenCodeTestRoute(t, tc.provider, tc.model, protocol)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After", "273866")
@@ -414,14 +526,14 @@ func TestOpenCodeExecutor_UsageLimitKeepsRetryAfterAndScope(t *testing.T) {
 				_, _ = w.Write([]byte(`{"type":"error","error":{"type":"` + tc.errorType + `","message":"usage limit reached"}}`))
 			}))
 			t.Cleanup(server.Close)
-			exec := NewOpenCodeExecutor(constant.OpenCodeGo)
+			exec := NewOpenCodeExecutor(tc.provider)
 			exec.cfg = &config.Config{}
 			auth := &clipoauth.Auth{
-				Provider:   constant.OpenCodeGo,
+				Provider:   tc.provider,
 				Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
 			}
-			payload := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"PONG"}]}`)
-			req := cliproxyexecutor.Request{Model: "deepseek-v4-pro", Payload: payload}
+			payload := []byte(`{"model":"` + tc.model + `","messages":[{"role":"user","content":"PONG"}]}`)
+			req := cliproxyexecutor.Request{Model: tc.model, Payload: payload}
 			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload}
 			want := 273866 * time.Second
 			check := func(path string, err error) {
@@ -431,8 +543,8 @@ func TestOpenCodeExecutor_UsageLimitKeepsRetryAfterAndScope(t *testing.T) {
 					t.Fatalf("%s: error %v does not carry Retry-After %s", path, err, want)
 				}
 				scoped, ok := err.(interface{ IsCredentialScoped() bool })
-				if !ok || scoped.IsCredentialScoped() != tc.credentialScoped {
-					t.Fatalf("%s: credential scope = %v, want %v", path, ok && scoped.IsCredentialScoped(), tc.credentialScoped)
+				if !ok || scoped.IsCredentialScoped() || clipoauth.ResultErrorFromError(err).Code != tc.poolCode {
+					t.Fatalf("%s: expected a pool-scoped error %q, got %+v", path, tc.poolCode, clipoauth.ResultErrorFromError(err))
 				}
 			}
 			_, err := exec.Execute(context.Background(), auth, req, opts)

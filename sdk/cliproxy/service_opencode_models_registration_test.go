@@ -57,3 +57,46 @@ func TestRegisterConfigAPIKeyAuthsOpenCodeModels(t *testing.T) {
 		t.Fatalf("OpenCode models registered for client %s (count=%d) but absent from GetAvailableModelInfos() source used by /v1/models", auths[0].ID, len(models))
 	}
 }
+
+// Both gateways must intersect their own catalog with executable protocols
+// before free models become visible to downstream inventory consumers.
+func TestRegisterOpenCodeFreeModelsFromEachGateway(t *testing.T) {
+	for _, provider := range []string{"opencode", "opencode-go"} {
+		t.Run(provider, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/models" {
+					http.NotFound(w, r)
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":[{"id":"beam-free","cost":{"text":{"input":{"price":0},"output":{"price":0}}},"canonical_id":"reflection/beam-1.0-501b-a23b","api":{"chat-completions":{}}},{"id":"hy4-flash-free","cost":{"text":{"input":{"price":0},"output":{"price":0.001}}},"api":{"chat-completions":{}}},{"id":"deepseek-v4-pro","api":{"unsupported":{}}}]}`))
+			}))
+			defer server.Close()
+			cfg := &config.Config{}
+			if provider == "opencode" {
+				cfg.OpenCodeKey = []config.OpenCodeKey{{APIKey: "fixture-zen", BaseURL: server.URL}}
+			} else {
+				cfg.OpenCodeGoKey = []config.OpenCodeGoKey{{APIKey: "fixture-go", BaseURL: server.URL}}
+			}
+			manager := coreauth.NewManager(nil, nil, nil)
+			svc := &Service{cfg: cfg, coreManager: manager}
+			svc.registerConfigAPIKeyAuths(context.Background(), cfg)
+			auths := manager.List()
+			if len(auths) != 1 {
+				t.Fatalf("got %d credentials, want 1", len(auths))
+			}
+			registry := internalregistry.GetGlobalRegistry()
+			defer registry.UnregisterClient(auths[0].ID)
+			entries := registry.GetModelsForClient(auths[0].ID)
+			if len(entries) != 2 {
+				t.Fatalf("got %d registered models, want only the two compatible routes", len(entries))
+			}
+			if auths[0].ModelQuotaDomain("beam-free") != auths[0].RoutingQuotaDomain()+":free" || auths[0].ModelQuotaDomain("hy4-flash-free") != auths[0].RoutingQuotaDomain() {
+				t.Fatal("quota domain does not match the gateway prices")
+			}
+			model := registry.GetModelInfo("beam-free", provider)
+			if model == nil || model.CatalogRouteProviderID != provider || model.CatalogProviderID != "reflection" || model.CatalogModelID != "beam-1.0-501b-a23b" {
+				t.Errorf("unexpected published identity: %+v", model)
+			}
+		})
+	}
+}

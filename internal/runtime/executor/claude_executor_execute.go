@@ -355,6 +355,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		if errClose := errBody.Close(); errClose != nil {
 			log.Errorf("response body close error: %v", errClose)
 		}
+		if limit := e.gatewayQuota.limit(httpResp, b); limit != nil {
+			return resp, limit
+		}
 		if fastRequest {
 			return resp, newClaudeFastDirectResponseError(httpResp, b)
 		}
