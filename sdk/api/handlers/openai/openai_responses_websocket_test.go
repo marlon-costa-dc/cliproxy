@@ -8163,13 +8163,6 @@ func TestResponsesWebsocketWriterCloseInterruptsBlockedPing(t *testing.T) {
 				return errClose
 			},
 		},
-		{
-			name: "closeWithPayload",
-			close: func(w *responsesWebsocketWriter) error {
-				_, errClose := w.closeWithPayload([]byte(`{"type":"error","status":400}`))
-				return errClose
-			},
-		},
 	}
 
 	for _, tc := range cases {

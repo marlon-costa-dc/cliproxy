@@ -282,9 +282,10 @@ func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error
 	if !w.closing.CompareAndSwap(false, true) {
 		return false, nil
 	}
-	if !w.writeMu.TryLock() {
-		return false, w.conn.Close()
-	}
+	// A terminal application error must be serialized after an in-flight data
+	// frame. Closing on lock contention drops that error and leaves the client
+	// with an abnormal EOF after the committed frame.
+	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
 
 	errWrite := w.conn.WriteMessage(websocket.TextMessage, payload)
